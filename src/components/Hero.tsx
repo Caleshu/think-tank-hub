@@ -1,6 +1,8 @@
 import { motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 
 const Hero = () => {
+  const navigate = useNavigate();
   return (
     <section className="min-h-screen flex flex-col justify-center items-center text-center px-6 relative overflow-hidden">
       {/* Ambient glow */}
@@ -35,7 +37,10 @@ const Hero = () => {
           transition={{ delay: 0.6, duration: 0.6 }}
           className="flex flex-col sm:flex-row gap-4 justify-center"
         >
-          <button className="bg-primary text-primary-foreground px-8 py-4 rounded-lg font-semibold text-base hover:opacity-90 transition-opacity">
+          <button
+            onClick={() => navigate("/auth")}
+            className="bg-primary text-primary-foreground px-8 py-4 rounded-lg font-semibold text-base hover:opacity-90 transition-opacity"
+          >
             Start Debating
           </button>
           <button className="border border-border text-foreground px-8 py-4 rounded-lg font-semibold text-base hover:bg-secondary transition-colors">
