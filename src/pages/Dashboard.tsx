@@ -354,56 +354,132 @@ const Dashboard = () => {
                 </h2>
                 <p className="text-muted-foreground mb-8">Choose what you want to argue about.</p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {topics.map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => setSelectedTopic(t)}
-                      className="card-surface p-5 text-left hover:border-primary/50 transition-colors group"
-                    >
-                      <h3 className="text-foreground font-medium group-hover:text-primary transition-colors">
-                        {t.name}
-                      </h3>
-                      <p className="text-xs text-muted-foreground mt-1">{t.description}</p>
-                    </button>
-                  ))}
+                  {topics.map((t) => {
+                    const existingArg = args.find((a) => a.topic_id === t.id);
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => setSelectedTopic(t)}
+                        className="card-surface p-5 text-left hover:border-primary/50 transition-colors group"
+                      >
+                        <h3 className="text-foreground font-medium group-hover:text-primary transition-colors">
+                          {t.name}
+                        </h3>
+                        <p className="text-xs text-muted-foreground mt-1">{t.description}</p>
+                        {existingArg && (
+                          <p className="text-xs text-primary mt-2 font-mono">
+                            ✓ Argument saved ({existingArg.stance.toUpperCase()} · v{existingArg.version})
+                          </p>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </>
             ) : !stance ? (
-              <>
-                <button
-                  onClick={() => setSelectedTopic(null)}
-                  className="text-muted-foreground hover:text-foreground text-sm mb-6 inline-block"
-                >
-                  ← Back to topics
-                </button>
-                <h2
-                  className="text-3xl text-foreground mb-2"
-                  style={{ fontFamily: "var(--font-display)" }}
-                >
-                  {selectedTopic.name}
-                </h2>
-                <p className="text-muted-foreground mb-8">Which side are you on?</p>
-                <div className="grid grid-cols-2 gap-4">
-                  <button
-                    onClick={() => setStance("for")}
-                    className="card-surface p-8 text-center hover:border-green-500/50 transition-colors group"
-                  >
-                    <span className="text-3xl mb-2 block">👍</span>
-                    <span className="text-foreground font-semibold group-hover:text-green-400 transition-colors">
-                      FOR
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => setStance("against")}
-                    className="card-surface p-8 text-center hover:border-red-500/50 transition-colors group"
-                  >
-                    <span className="text-3xl mb-2 block">👎</span>
-                    <span className="text-foreground font-semibold group-hover:text-red-400 transition-colors">
-                      AGAINST
-                    </span>
-                  </button>
-                </div>
-              </>
+              (() => {
+                const existingArg = args.find((a) => a.topic_id === selectedTopic.id);
+                if (existingArg) {
+                  return (
+                    <>
+                      <button
+                        onClick={() => setSelectedTopic(null)}
+                        className="text-muted-foreground hover:text-foreground text-sm mb-6 inline-block"
+                      >
+                        ← Back to topics
+                      </button>
+                      <h2
+                        className="text-3xl text-foreground mb-2"
+                        style={{ fontFamily: "var(--font-display)" }}
+                      >
+                        {selectedTopic.name}
+                      </h2>
+                      <p className="text-muted-foreground mb-6">You already have an argument for this topic.</p>
+
+                      <div className="card-surface p-5 mb-6">
+                        <div className="flex items-center gap-3 mb-2">
+                          <span
+                            className={`text-xs font-semibold px-2 py-0.5 rounded ${
+                              existingArg.stance === "for"
+                                ? "bg-green-500/10 text-green-400"
+                                : "bg-red-500/10 text-red-400"
+                            }`}
+                          >
+                            {existingArg.stance.toUpperCase()}
+                          </span>
+                          <span className="text-xs text-primary font-mono">v{existingArg.version}</span>
+                        </div>
+                        <h3 className="text-foreground font-medium mb-1">{existingArg.title}</h3>
+                        <p className="text-sm text-muted-foreground leading-relaxed">{existingArg.content}</p>
+                      </div>
+
+                      <div className="flex gap-3 flex-wrap">
+                        <Button
+                          onClick={() => {
+                            setTab("profile");
+                            toast({ title: "Ready to debate!", description: "Your saved argument will be used." });
+                          }}
+                        >
+                          <Swords className="w-4 h-4" /> Use This Argument
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            startEdit(existingArg);
+                            setTab("profile");
+                          }}
+                        >
+                          <Pencil className="w-4 h-4" /> Edit It
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          onClick={() => setStance(existingArg.stance === "for" ? "against" : "for")}
+                        >
+                          Write for other side
+                        </Button>
+                      </div>
+                    </>
+                  );
+                }
+
+                return (
+                  <>
+                    <button
+                      onClick={() => setSelectedTopic(null)}
+                      className="text-muted-foreground hover:text-foreground text-sm mb-6 inline-block"
+                    >
+                      ← Back to topics
+                    </button>
+                    <h2
+                      className="text-3xl text-foreground mb-2"
+                      style={{ fontFamily: "var(--font-display)" }}
+                    >
+                      {selectedTopic.name}
+                    </h2>
+                    <p className="text-muted-foreground mb-8">Which side are you on?</p>
+                    <div className="grid grid-cols-2 gap-4">
+                      <button
+                        onClick={() => setStance("for")}
+                        className="card-surface p-8 text-center hover:border-green-500/50 transition-colors group"
+                      >
+                        <span className="text-3xl mb-2 block">👍</span>
+                        <span className="text-foreground font-semibold group-hover:text-green-400 transition-colors">
+                          FOR
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => setStance("against")}
+                        className="card-surface p-8 text-center hover:border-red-500/50 transition-colors group"
+                      >
+                        <span className="text-3xl mb-2 block">👎</span>
+                        <span className="text-foreground font-semibold group-hover:text-red-400 transition-colors">
+                          AGAINST
+                        </span>
+                      </button>
+                    </div>
+                  </>
+                );
+              })()
             ) : (
               <>
                 <button
@@ -451,7 +527,7 @@ const Dashboard = () => {
                   </Button>
                 </div>
               </>
-            )}
+            )
           </motion.div>
         )}
       </div>
