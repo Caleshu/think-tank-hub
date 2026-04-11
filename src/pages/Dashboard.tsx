@@ -527,7 +527,7 @@ const Dashboard = () => {
                   </Button>
                 </div>
               </>
-            )
+            )}
           </motion.div>
         )}
       </div>
