@@ -234,6 +234,14 @@ const Dashboard = () => {
       <div className="max-w-4xl mx-auto px-6 py-10">
         {tab === "profile" ? (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            {/* Username */}
+            <div className="mb-8">
+              <h2 className="text-3xl text-foreground" style={{ fontFamily: "var(--font-display)" }}>
+                {profile.username}
+              </h2>
+              <p className="text-muted-foreground text-sm mt-1">Your intellectual portfolio</p>
+            </div>
+
             {/* Stats */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
               {[
