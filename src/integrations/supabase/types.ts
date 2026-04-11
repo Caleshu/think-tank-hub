@@ -14,7 +14,107 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      arguments: {
+        Row: {
+          content: string
+          created_at: string
+          debates_used_in: number
+          id: string
+          stance: string
+          title: string
+          topic_id: string
+          updated_at: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          debates_used_in?: number
+          id?: string
+          stance: string
+          title: string
+          topic_id: string
+          updated_at?: string
+          user_id: string
+          version?: number
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          debates_used_in?: number
+          id?: string
+          stance?: string
+          title?: string
+          topic_id?: string
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "arguments_topic_id_fkey"
+            columns: ["topic_id"]
+            isOneToOne: false
+            referencedRelation: "topics"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          changed_minds_count: number
+          created_at: string
+          debates_count: number
+          id: string
+          reputation: number
+          updated_at: string
+          user_id: string
+          username: string
+        }
+        Insert: {
+          changed_minds_count?: number
+          created_at?: string
+          debates_count?: number
+          id?: string
+          reputation?: number
+          updated_at?: string
+          user_id: string
+          username: string
+        }
+        Update: {
+          changed_minds_count?: number
+          created_at?: string
+          debates_count?: number
+          id?: string
+          reputation?: number
+          updated_at?: string
+          user_id?: string
+          username?: string
+        }
+        Relationships: []
+      }
+      topics: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
