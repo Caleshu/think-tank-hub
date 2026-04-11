@@ -12,7 +12,7 @@ const Hero = () => {
         transition={{ duration: 0.8, ease: "easeOut" }}
         className="relative z-10 max-w-4xl"
       >
-        <p className="step-number mb-6 uppercase tracking-[0.3em]">The platform where debate feels good</p>
+        <p className="step-number mb-6 uppercase tracking-[0.3em]">The platform where debate <span className="italic text-sky-400">feels</span> good</p>
         
         <h1 className="text-6xl md:text-8xl lg:text-9xl font-normal leading-[0.9] mb-8">
           <span className="text-foreground">Debate</span>
