@@ -7,11 +7,14 @@ import FeedCard from "@/components/feed/FeedCard"
 import ArgumentInteractionModal from "@/components/feed/ArgumentInteractionModal"
 import ReplyComposer from "@/components/feed/ReplyComposer"
 import FocusNodeCard from "@/components/feed/FocusNodeCard"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, Sun, Moon } from "lucide-react"
+import RotatingHint from "@/components/RotatingHint"
+import { useTheme } from "@/hooks/useTheme"
 
 export default function ArgumentDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { theme, toggleTheme } = useTheme()
 
   const [argument, setArgument] = useState<FeedArgument | null>(null)
   const [flatReplies, setFlatReplies] = useState<DebateReply[]>([])
@@ -24,7 +27,6 @@ export default function ArgumentDetail() {
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
 
-  // null = root argument is the focused node
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [showComposers, setShowComposers] = useState(false)
 
@@ -113,42 +115,37 @@ export default function ArgumentDetail() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center" }}>
+          <div className="w-6 h-6 border-2 border-t-transparent animate-spin mx-auto" style={{ borderColor: "var(--color-primary)", borderTopColor: "transparent", borderRadius: 0 }} />
+          <RotatingHint />
+        </div>
       </div>
     )
   }
 
   if (notFound || !argument) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4">
-        <p className="text-2xl text-foreground" style={{ fontFamily: "var(--font-display)" }}>
-          Argument not found
-        </p>
-        <button onClick={() => navigate(-1)} className="text-primary hover:underline text-sm">
+      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 }}>
+        <p style={{ fontFamily: "var(--font-display)", fontSize: 28, color: "var(--ink)" }}>Argument not found</p>
+        <button onClick={() => navigate(-1)} style={{ color: "var(--color-primary)", fontSize: 13, fontFamily: "var(--font-mono)", background: "none", border: "none", cursor: "pointer" }}>
           Go back
         </button>
       </div>
     )
   }
 
-  // ── Focus mode derived state ──────────────────────────────────────────────
   const isRootFocused = focusedId === null
   const focusedReply = focusedId ? findNode(focusedId, replyTree) : null
   const path = focusedId ? getPathToNode(focusedId, replyTree) : []
 
-  // The parent of the focused node:
-  //   - null when root is focused (no parent)
-  //   - root argument when the focused reply is a direct child of root (path.length === 1)
-  //   - the previous reply in the path otherwise
   const parentIsRoot = !isRootFocused && path.length === 1
   const parentReply = !isRootFocused && path.length > 1 ? path[path.length - 2] : null
 
-  // Clicking the parent node navigates up one level
   const handleGoBack = () => {
     setShowComposers(false)
     if (parentReply) setFocusedId(parentReply.id)
-    else setFocusedId(null)   // parent was root → back to root
+    else setFocusedId(null)
   }
 
   const handleDrillIn = (id: string) => {
@@ -158,7 +155,6 @@ export default function ArgumentDetail() {
 
   const isArgumentAuthor = !!currentUserId && argument.user_id === currentUserId
 
-  // Immediate children of the focused node
   const supportChildren = isRootFocused
     ? replyTree.filter((r) => r.reply_type === "support")
     : (focusedReply?.children.filter((c) => c.reply_type === "support") ?? [])
@@ -180,29 +176,26 @@ export default function ArgumentDetail() {
       : focusedReply?.user_id !== currentUserId)
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b border-border px-6 py-4 flex items-center gap-4">
-        <button
-          onClick={() => navigate(-1)}
-          className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2 text-sm"
-        >
-          <ArrowLeft className="w-4 h-4" /> Back
+    <div style={{ minHeight: "100vh", background: "var(--bg)", color: "var(--ink)" }}>
+      {/* Topbar */}
+      <div className="topbar">
+        <button className="back-btn" onClick={() => navigate(-1)} style={{ margin: 0 }}>
+          <ArrowLeft style={{ width: 13, height: 13 }} /> Back
         </button>
-        <h1 className="text-xl" style={{ fontFamily: "var(--font-display)" }}>
-          <span className="text-primary italic">feels</span>
-        </h1>
-      </header>
+        <span className="logo" style={{ cursor: "default" }}>
+          <span className="dot" />
+          <span>Debate Me Bro</span>
+        </span>
+        <button className="icon-btn-pill" onClick={toggleTheme} title={theme === "dark" ? "Light mode" : "Dark mode"}>
+          {theme === "dark" ? <Sun style={{ width: 13, height: 13 }} /> : <Moon style={{ width: 13, height: 13 }} />}
+        </button>
+      </div>
 
-      <div className="max-w-4xl mx-auto px-6 py-8 space-y-0">
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-0">
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "40px 24px 80px" }}>
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
 
-          {/* ── TOP NODE ─────────────────────────────────────────────────────
-              When root is focused: root arg is the main node (no parent above).
-              When a reply is focused: show its parent here, dimmed + clickable to go up.
-          ─────────────────────────────────────────────────────────────────── */}
           <AnimatePresence mode="wait">
             {isRootFocused ? (
-              /* Root focused — root arg IS the focused node, shown prominently */
               <motion.div key="root-focused" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                 <FeedCard
                   argument={{ ...argument, my_interaction: myArgInteraction }}
@@ -214,18 +207,16 @@ export default function ArgumentDetail() {
                 />
               </motion.div>
             ) : (
-              /* Drill-down — show parent at top, dimmed, clicking goes back */
               <motion.div
                 key={`parent-${parentReply?.id ?? "root"}`}
                 initial={{ opacity: 0, y: -6 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
-                className="opacity-50 hover:opacity-70 transition-opacity cursor-pointer"
+                style={{ opacity: 0.5, cursor: "pointer", transition: "opacity 0.15s" }}
                 onClick={handleGoBack}
                 title="Click to go back"
               >
                 {parentIsRoot || !parentReply ? (
-                  /* Parent is the root argument */
                   <FeedCard
                     argument={{ ...argument, my_interaction: myArgInteraction }}
                     currentUserId={currentUserId}
@@ -233,7 +224,6 @@ export default function ArgumentDetail() {
                     variant="detail"
                   />
                 ) : (
-                  /* Parent is a reply node */
                   <FocusNodeCard
                     reply={parentReply}
                     myInteraction={myReplyInteractions.get(parentReply.id) ?? null}
@@ -258,14 +248,14 @@ export default function ArgumentDetail() {
             }}
           />
 
-          {/* ── CONNECTOR LINE (only when drilled into a reply) ── */}
+          {/* Connector line when drilled in */}
           {!isRootFocused && (
-            <div className="flex justify-center py-1">
-              <div className="w-px h-8 bg-border/60" />
+            <div style={{ display: "flex", justifyContent: "center", padding: "4px 0" }}>
+              <div style={{ width: 1, height: 32, background: "var(--rule)" }} />
             </div>
           )}
 
-          {/* ── FOCUSED REPLY NODE (only when drilled in) ── */}
+          {/* Focused reply node */}
           <AnimatePresence mode="wait">
             {!isRootFocused && focusedReply && (
               <motion.div
@@ -289,10 +279,10 @@ export default function ArgumentDetail() {
             )}
           </AnimatePresence>
 
-          {/* ── REPLY COMPOSERS ── */}
+          {/* Reply composers */}
           {canReplyHere && showComposers && (
-            <div className="pt-4">
-              <div className="grid grid-cols-2 gap-4">
+            <div style={{ paddingTop: 16 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                 <ReplyComposer
                   argumentId={argument.id}
                   parentId={isRootFocused ? null : focusedId}
@@ -313,29 +303,36 @@ export default function ArgumentDetail() {
             </div>
           )}
 
-          {/* ── CHILDREN COLUMNS ── */}
-          <div className="pt-6">
-            <div className="grid grid-cols-2 gap-6 mb-4">
-              <div className="flex items-center gap-2">
-                <div className="h-px flex-1 bg-green-500/30" />
-                <span className="text-xs font-semibold text-green-400 uppercase tracking-widest whitespace-nowrap">
+          {/* Children columns */}
+          <div style={{ paddingTop: 32 }}>
+            {/* Column headers */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ flex: 1, height: 1, background: "oklch(0.65 0.15 145 / 0.35)" }} />
+                <span style={{
+                  fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.14em",
+                  textTransform: "uppercase", color: "oklch(0.65 0.15 145)", whiteSpace: "nowrap"
+                }}>
                   Support ({supportChildren.length})
                 </span>
-                <div className="h-px flex-1 bg-green-500/30" />
+                <div style={{ flex: 1, height: 1, background: "oklch(0.65 0.15 145 / 0.35)" }} />
               </div>
-              <div className="flex items-center gap-2">
-                <div className="h-px flex-1 bg-red-500/30" />
-                <span className="text-xs font-semibold text-red-400 uppercase tracking-widest whitespace-nowrap">
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ flex: 1, height: 1, background: "oklch(0.55 0.22 25 / 0.35)" }} />
+                <span style={{
+                  fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.14em",
+                  textTransform: "uppercase", color: "var(--color-primary)", whiteSpace: "nowrap"
+                }}>
                   Challenge ({disagreeChildren.length})
                 </span>
-                <div className="h-px flex-1 bg-red-500/30" />
+                <div style={{ flex: 1, height: 1, background: "oklch(0.55 0.22 25 / 0.35)" }} />
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-6">
-              <div className="flex flex-col gap-3">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {supportChildren.length === 0 ? (
-                  <p className="text-xs text-muted-foreground text-center py-6">No support yet.</p>
+                  <p style={{ fontSize: 12, color: "var(--ink-3)", textAlign: "center", padding: "24px 0" }}>No support yet.</p>
                 ) : (
                   supportChildren.map((c) => (
                     <FocusNodeCard
@@ -349,9 +346,9 @@ export default function ArgumentDetail() {
                   ))
                 )}
               </div>
-              <div className="flex flex-col gap-3">
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {disagreeChildren.length === 0 ? (
-                  <p className="text-xs text-muted-foreground text-center py-6">No challenges yet.</p>
+                  <p style={{ fontSize: 12, color: "var(--ink-3)", textAlign: "center", padding: "24px 0" }}>No challenges yet.</p>
                 ) : (
                   disagreeChildren.map((c) => (
                     <FocusNodeCard

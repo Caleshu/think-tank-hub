@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '@/integrations/supabase/client'
+import RotatingHint from '@/components/RotatingHint'
+import { useTheme } from '@/hooks/useTheme'
+import { ArrowLeft, Sun, Moon, Brain } from 'lucide-react'
 
 type Phase = 'loading' | 'reading' | 'chat' | 'rating' | 'refine' | 'ended' | 'requeuing'
 type Message = { id: string; user_id: string; content: string; created_at: string }
@@ -8,6 +11,7 @@ type Message = { id: string; user_id: string; content: string; created_at: strin
 export default function DebateRoom() {
   const { id: debateId } = useParams()
   const navigate = useNavigate()
+  const { theme, toggleTheme } = useTheme()
 
   const [user, setUser] = useState<any>(null)
   const [debate, setDebate] = useState<any>(null)
@@ -31,7 +35,6 @@ export default function DebateRoom() {
   const userRef = useRef<any>(null)
   const phaseRef = useRef<Phase>('loading')
 
-  // Keep phaseRef in sync so async callbacks can check current phase
   useEffect(() => { phaseRef.current = phase }, [phase])
 
   const updatePhase = (d: any, _u: any) => {
@@ -39,6 +42,25 @@ export default function DebateRoom() {
     if (d.status === 'reading') { setPhase('reading'); return }
     if (d.status === 'active') { setPhase('chat'); startTimer(d) }
     if (d.status === 'ended' && !d.ended_reason) setPhase('ended')
+  }
+
+  // Try to advance reading→active when both players are ready
+  const tryAdvanceToActive = async (d: any) => {
+    if (!d.for_ready || !d.against_ready || d.status !== 'reading') return
+    const timerEnd = new Date(Date.now() + 3 * 60 * 1000).toISOString()
+    // Use conditional update so only one client wins the race
+    const { data: updated } = await supabase
+      .from('debates')
+      .update({ status: 'active', timer_end: timerEnd })
+      .eq('id', d.id)
+      .eq('status', 'reading')    // only fires if still 'reading'
+      .select('*')
+      .single()
+    if (updated) {
+      setDebate(updated)
+      debateRef.current = updated
+      updatePhase(updated, userRef.current)
+    }
   }
 
   useEffect(() => {
@@ -50,23 +72,42 @@ export default function DebateRoom() {
       const init = async (u: any) => {
         const { data: debateData } = await supabase.from('debates').select('*').eq('id', debateId).single()
         if (!debateData) { navigate('/'); return }
+
+        // If this debate was already ended/abandoned, send user back
+        if (debateData.status === 'ended') { navigate('/dashboard'); return }
+
         setDebate(debateData)
         debateRef.current = debateData
         updatePhase(debateData, u)
+        // If both already ready when we join, advance immediately
+        await tryAdvanceToActive(debateData)
+
         channel = supabase.channel(`debate-room-${debateId}`)
           .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'debates', filter: `id=eq.${debateId}` },
-            (payload) => {
+            async (payload) => {
               const d = payload.new
               setDebate(d); debateRef.current = d
-              if (d.status === 'ended' && d.ended_reason === 'disconnect') {
-                if (phaseRef.current !== 'rating' && phaseRef.current !== 'refine') {
-                  setPhase('requeuing'); autoRequeue(u, d)
+              if (d.status === 'ended') {
+                if (d.ended_reason === 'disconnect' || d.ended_reason === 'abandoned') {
+                  if (phaseRef.current !== 'rating' && phaseRef.current !== 'refine') {
+                    setPhase('requeuing'); autoRequeue(u, d)
+                  }
+                } else if (!d.ended_reason) {
+                  // Normal chat-end — move both users to rating if they're still in chat
+                  if (phaseRef.current === 'chat') {
+                    phaseRef.current = 'rating'
+                    setPhase('rating')
+                  }
                 }
                 return
               }
-              // Don't interrupt rating/refine — user is finishing their session
               if (phaseRef.current !== 'rating' && phaseRef.current !== 'refine') {
-                updatePhase(d, u)
+                // If both ready but status still reading, advance
+                if (d.for_ready && d.against_ready && d.status === 'reading') {
+                  await tryAdvanceToActive(d)
+                } else {
+                  updatePhase(d, u)
+                }
               }
             })
           .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `debate_id=eq.${debateId}` },
@@ -80,21 +121,62 @@ export default function DebateRoom() {
       }
       init(data.user)
     })
-    return () => { if (channel) channel.unsubscribe(); if (timerRef.current) clearInterval(timerRef.current) }
+    return () => {
+      // On unmount, clean up the debate so the other user isn't left hanging
+      const d = debateRef.current
+      const p = phaseRef.current
+      if (d) {
+        if (p === 'loading') {
+          // Cancel waiting debate — prevents other users from joining a ghost room
+          supabase.from('debates')
+            .update({ status: 'ended', ended_reason: 'abandoned' })
+            .eq('id', d.id)
+            .eq('status', 'waiting')
+            .then(() => {})
+        } else if (p === 'reading' || p === 'chat') {
+          // Signal disconnect to opponent so they get requeued
+          supabase.from('debates')
+            .update({ status: 'ended', ended_reason: 'disconnect' })
+            .eq('id', d.id)
+            .in('status', ['reading', 'active'])
+            .then(() => {})
+        }
+      }
+      if (channel) channel.unsubscribe()
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
   }, [debateId])
 
-  // Polling fallback: catches realtime events missed during loading and reading phases
+  // Polling fallback — 1.5 s for loading/reading, 3 s during chat
   useEffect(() => {
-    if (phase !== 'loading' && phase !== 'reading') return
-    const expectedStatus = phase === 'loading' ? 'waiting' : 'reading'
+    if (phase !== 'loading' && phase !== 'reading' && phase !== 'chat') return
+    const interval = phase === 'chat' ? 3000 : 1500
     const poll = setInterval(async () => {
       const { data } = await supabase.from('debates').select('*').eq('id', debateId).single()
-      if (data && data.status !== expectedStatus) {
-        setDebate(data)
-        debateRef.current = data
-        updatePhase(data, userRef.current)
+      if (!data) return
+
+      if (data.status === 'ended') {
+        if (data.ended_reason === 'abandoned' || data.ended_reason === 'disconnect') {
+          if (phaseRef.current !== 'rating' && phaseRef.current !== 'refine') {
+            clearInterval(poll); setPhase('requeuing'); autoRequeue(userRef.current, data)
+          }
+        } else if (!data.ended_reason && phaseRef.current === 'chat') {
+          // Other user clicked "Done debating" — move to rating
+          phaseRef.current = 'rating'; setPhase('rating')
+        }
+        return
       }
-    }, 3000)
+
+      if (phase === 'loading' || phase === 'reading') {
+        const expectedStatus = phase === 'loading' ? 'waiting' : 'reading'
+        if (data.status !== expectedStatus) {
+          setDebate(data); debateRef.current = data
+          updatePhase(data, userRef.current)
+        } else if (phase === 'reading' && data.for_ready && data.against_ready) {
+          await tryAdvanceToActive(data)
+        }
+      }
+    }, interval)
     return () => clearInterval(poll)
   }, [phase, debateId])
 
@@ -150,18 +232,11 @@ export default function DebateRoom() {
     setUnderstood(true)
     const field = mySide() === 'for' ? { for_ready: true } : { against_ready: true }
     await supabase.from('debates').update(field).eq('id', debateId)
+    // Re-fetch and try to advance — handles the case where opponent already clicked
     const { data } = await supabase.from('debates').select('*').eq('id', debateId).single()
-    if (!data) return
-    const bothReady = (mySide() === 'for' ? true : data.for_ready) && (mySide() === 'against' ? true : data.against_ready)
-    if (bothReady) {
-      const timerEnd = new Date(Date.now() + 3 * 60 * 1000).toISOString()
-      await supabase.from('debates').update({ status: 'active', timer_end: timerEnd }).eq('id', debateId)
-      // Transition immediately for the user who triggered the final update
-      // (the other user catches it via realtime or the polling fallback)
-      const activated = { ...data, status: 'active', timer_end: timerEnd }
-      setDebate(activated)
-      debateRef.current = activated
-      updatePhase(activated, userRef.current)
+    if (data) {
+      setDebate(data); debateRef.current = data
+      await tryAdvanceToActive(data)
     }
   }
 
@@ -176,14 +251,8 @@ export default function DebateRoom() {
     if (mindChangedDone || !debate || !user) return
     setMindChangedDone(true)
     const oppId = mySide() === 'for' ? debate.against_user_id : debate.for_user_id
-    // SECURITY DEFINER function bypasses RLS so we can increment the opponent's count
     await supabase.rpc('increment_changed_minds', { target_user_id: oppId })
-    // Insert a system message so the opponent gets a realtime notification
-    await supabase.from('messages').insert({
-      debate_id: debateId,
-      user_id: user.id,
-      content: '__mind_changed__',
-    })
+    await supabase.from('messages').insert({ debate_id: debateId, user_id: user.id, content: '__mind_changed__' })
   }
 
   const saveLiveRefinement = async () => {
@@ -195,30 +264,30 @@ export default function DebateRoom() {
     if (existing) {
       await supabase.from('arguments').update({ content: liveArg, version: existing.version + 1 }).eq('id', existing.id)
     }
-    // Update the debate record so the opponent sees the refined argument
-    // and myArg() returns the new content when the panel reopens
     const argField = mySide() === 'for' ? { for_argument: liveArg } : { against_argument: liveArg }
     await supabase.from('debates').update(argField).eq('id', debateId)
     const updated = { ...debateRef.current, ...argField }
-    setDebate(updated)
-    debateRef.current = updated
-    setSavingLive(false)
-    setShowRefinePanel(false)
+    setDebate(updated); debateRef.current = updated
+    setSavingLive(false); setShowRefinePanel(false)
   }
 
-  const handleLeave = () => {
+  const handleLeave = async () => {
     phaseRef.current = 'rating'
     setPhase('rating')
+    // Signal the other user — only the first caller wins the conditional update
+    await supabase.from('debates')
+      .update({ status: 'ended', ended_at: new Date().toISOString() })
+      .eq('id', debateId)
+      .eq('status', 'active')
   }
 
   const submitRating = async () => {
     const oppId = mySide() === 'for' ? debate.against_user_id : debate.for_user_id
     await supabase.from('ratings').insert({
       debate_id: debateId, rater_id: user.id, rated_id: oppId,
-      engaged_argument: ratings.argument || 3,
-      respectful: ratings.behavior || 3,
+      engaged_argument: ratings.argument || 3, respectful: ratings.behavior || 3,
     })
-    await supabase.from('debates').update({ status: 'ended', ended_at: new Date().toISOString() }).eq('id', debateId)
+    // Status is already 'ended' (set by handleLeave) — just move this user to refine
     phaseRef.current = 'refine'
     setRefinedArg(myArg())
     setPhase('refine')
@@ -240,123 +309,196 @@ export default function DebateRoom() {
   const secs = timerSecs % 60
   const timerPct = (timerSecs / 180) * 100
 
-  if (phase === 'loading') return (
-    <div className="min-h-screen bg-background flex items-center justify-center">
-      <div className="text-center space-y-4">
-        <div className="w-10 h-10 rounded-full border-2 border-primary border-t-transparent animate-spin mx-auto" />
-        <p className="text-muted-foreground text-sm tracking-wide">Connecting to debate...</p>
-      </div>
-    </div>
-  )
-
-  if (phase === 'requeuing') return (
-    <div className="min-h-screen bg-background flex items-center justify-center px-4">
-      <div className="bg-card border border-border rounded-lg p-10 max-w-sm w-full text-center space-y-4">
-        <div className="w-10 h-10 rounded-full border-2 border-primary border-t-transparent animate-spin mx-auto" />
-        <h2 className="text-foreground font-display text-xl">Finding a new opponent</h2>
-        <p className="text-muted-foreground text-sm">{requeueStatus}</p>
-        <p className="text-muted-foreground text-xs">This page will advance automatically when matched</p>
-        <button onClick={() => navigate('/dashboard')} className="text-muted-foreground hover:text-foreground text-sm underline underline-offset-4 transition-colors">
-          Change topic instead
+  // ── Shared topbar ─────────────────────────────────────────────
+  const Topbar = ({ showBack = true }: { showBack?: boolean }) => (
+    <div className="topbar">
+      {showBack ? (
+        <button className="back-btn" onClick={() => navigate('/dashboard')} style={{ margin: 0 }}>
+          <ArrowLeft style={{ width: 13, height: 13 }} /> Dashboard
         </button>
+      ) : <span />}
+      <span className="logo" style={{ cursor: 'default' }}>
+        <span className="dot" />
+        <span>Debate Me Bro</span>
+      </span>
+      <button className="icon-btn-pill" onClick={toggleTheme} title={theme === 'dark' ? 'Light mode' : 'Dark mode'}>
+        {theme === 'dark' ? <Sun style={{ width: 13, height: 13 }} /> : <Moon style={{ width: 13, height: 13 }} />}
+      </button>
+    </div>
+  )
+
+  // ── Loading phase ──────────────────────────────────────────────
+  if (phase === 'loading') return (
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--ink)' }}>
+      <Topbar />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 'calc(100vh - 52px)' }}>
+        <div style={{ textAlign: 'center', padding: '0 24px' }}>
+          <div className="w-8 h-8 border-2 border-t-transparent animate-spin mx-auto" style={{ borderColor: 'var(--color-primary)', borderTopColor: 'transparent', borderRadius: 0, marginBottom: 24 }} />
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: 22, color: 'var(--ink)', marginBottom: 8 }}>
+            Waiting for an opponent
+          </p>
+          <p style={{ fontSize: 13, color: 'var(--ink-3)', marginBottom: 24, maxWidth: 320, margin: '0 auto 24px' }}>
+            Another debater is being matched to your topic. This page will advance automatically.
+          </p>
+          <RotatingHint />
+        </div>
       </div>
     </div>
   )
 
-  return (
-    <div className="min-h-screen bg-background flex items-center justify-center px-4 py-12">
-      <div className="bg-card border border-border rounded-lg w-full max-w-2xl p-8 space-y-6">
+  // ── Requeuing phase ────────────────────────────────────────────
+  if (phase === 'requeuing') return (
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--ink)' }}>
+      <Topbar />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 'calc(100vh - 52px)', padding: '0 24px' }}>
+        <div className="dmb-card" style={{ maxWidth: 400, width: '100%', padding: '40px 32px', textAlign: 'center' }}>
+          <div className="w-8 h-8 border-2 border-t-transparent animate-spin mx-auto" style={{ borderColor: 'var(--color-primary)', borderTopColor: 'transparent', borderRadius: 0, marginBottom: 24 }} />
+          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 22, color: 'var(--ink)', margin: '0 0 8px' }}>Finding a new opponent</h2>
+          <p style={{ color: 'var(--ink-3)', fontSize: 14, marginBottom: 6 }}>{requeueStatus}</p>
+          <p style={{ color: 'var(--ink-4)', fontSize: 12, marginBottom: 24 }}>This page will advance automatically when matched.</p>
+          <RotatingHint />
+          <button
+            onClick={() => navigate('/dashboard')}
+            style={{ marginTop: 24, background: 'none', border: 'none', color: 'var(--ink-3)', fontSize: 13, cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 4 }}
+          >
+            Change topic instead
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 
-        {/* ── Reading phase ── */}
+  // ── Main debate shell ──────────────────────────────────────────
+  return (
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--ink)' }}>
+      <Topbar showBack={phase === 'ended'} />
+
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: '40px 24px 80px' }}>
+
+        {/* ── Reading phase ──────────────────────────────────── */}
         {phase === 'reading' && (
-          <>
-            <div className="space-y-1">
-              <p className="step-number">STEP 01</p>
-              <h2 className="font-display text-2xl text-foreground">Read their opening</h2>
-              <p className="text-muted-foreground text-sm">Chat unlocks only after both players confirm they've read the other side.</p>
+          <div>
+            <div style={{ marginBottom: 28 }}>
+              <p className="kicker">Step 01 of 03</p>
+              <h2 className="page-title" style={{ fontSize: 'clamp(24px, 3vw, 32px)', marginBottom: 8 }}>Read their opening</h2>
+              <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>
+                Chat unlocks once both sides confirm they've read the other's argument.
+              </p>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-secondary border border-border rounded-lg p-4 space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground uppercase tracking-widest">Your argument</span>
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${mySide() === 'for' ? 'bg-primary/20 text-primary' : 'bg-destructive/20 text-destructive'}`}>{mySide()}</span>
+
+            {/* Two-column argument comparison */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
+              {/* My argument */}
+              <div style={{ background: 'var(--surface)', border: `2px solid var(--color-primary)`, padding: '18px 20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Your argument</span>
+                  <span className={`dmb-pill ${mySide()}`}>{mySide().toUpperCase()}</span>
                 </div>
-                <p className="text-foreground text-sm leading-relaxed">{myArg()}</p>
+                <p style={{ fontSize: 13, color: 'var(--ink)', lineHeight: 1.6 }}>{myArg()}</p>
               </div>
-              <div className="bg-secondary border border-border rounded-lg p-4 space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground uppercase tracking-widest">Their argument</span>
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${mySide() === 'for' ? 'bg-destructive/20 text-destructive' : 'bg-primary/20 text-primary'}`}>{mySide() === 'for' ? 'against' : 'for'}</span>
+
+              {/* Opponent's argument */}
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--rule)', padding: '18px 20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Their argument</span>
+                  <span className={`dmb-pill ${mySide() === 'for' ? 'against' : 'for'}`}>
+                    {mySide() === 'for' ? 'AGAINST' : 'FOR'}
+                  </span>
                 </div>
-                <p className="text-foreground text-sm leading-relaxed">{oppArg() || 'Waiting for opponent...'}</p>
+                {oppArg() ? (
+                  <p style={{ fontSize: 13, color: 'var(--ink)', lineHeight: 1.6 }}>{oppArg()}</p>
+                ) : (
+                  <p style={{ fontSize: 13, color: 'var(--ink-4)', fontStyle: 'italic' }}>Waiting for opponent…</p>
+                )}
               </div>
             </div>
-            <button onClick={handleUnderstand} disabled={understood}
-              className={`w-full py-3 rounded-lg text-sm font-medium transition-all ${understood ? 'bg-primary/10 border border-primary/30 text-primary cursor-default' : 'bg-primary text-primary-foreground hover:bg-primary/90'}`}>
-              {understood ? '✓ Understood — waiting for opponent...' : 'I understand their side'}
+
+            <button
+              onClick={handleUnderstand}
+              disabled={understood}
+              className={understood ? 'dmb-btn ghost' : 'dmb-btn'}
+              style={{ width: '100%', justifyContent: 'center', opacity: understood ? 0.7 : 1 }}
+            >
+              {understood ? '✓ Understood — waiting for opponent…' : 'I understand their side'}
             </button>
-          </>
+
+            {understood && (
+              <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--ink-4)', marginTop: 12, fontFamily: 'var(--font-mono)' }}>
+                Waiting for the other side to confirm…
+              </p>
+            )}
+          </div>
         )}
 
-        {/* ── Chat phase ── */}
+        {/* ── Chat phase ─────────────────────────────────────── */}
         {phase === 'chat' && (
-          <>
-            {/* Header: topic + timer / done button */}
-            <div className="space-y-3">
-              <div className="flex justify-between items-center gap-4">
-                <p className="text-foreground font-display text-lg truncate flex-1">{debate?.topic_title}</p>
+          <div>
+            {/* Header: topic + timer */}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                <h2 className="chat-topic" style={{ flex: 1 }}>{debate?.topic_title}</h2>
                 {canLeave ? (
-                  <button onClick={handleLeave}
-                    className="px-4 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors whitespace-nowrap">
+                  <button onClick={handleLeave} className="dmb-btn sm">
                     Done debating →
                   </button>
                 ) : (
-                  <span className="text-sm font-semibold tabular-nums px-3 py-1 rounded-full border text-primary border-primary/30 bg-primary/10 whitespace-nowrap">
+                  <span className="timer">
                     {mins}:{secs.toString().padStart(2, '0')}
                   </span>
                 )}
               </div>
               {!canLeave && (
-                <div className="h-0.5 bg-border rounded-full overflow-hidden">
-                  <div className="h-0.5 rounded-full bg-primary transition-all duration-1000" style={{ width: `${timerPct}%` }} />
+                <div className="progress-track">
+                  <div className="progress-fill" style={{ width: `${timerPct}%`, transition: 'width 1s linear' }} />
                 </div>
               )}
             </div>
 
             {/* Messages */}
-            <div ref={chatRef} className="flex flex-col gap-3 min-h-[220px] max-h-[340px] overflow-y-auto py-2">
+            <div ref={chatRef} className="chat-msgs">
               {messages.length === 0 && (
-                <div className="flex-1 flex items-center justify-center py-8">
-                  <p className="text-muted-foreground text-xs text-center">Chat is open. Make your first move.</p>
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '32px 0' }}>
+                  <p style={{ color: 'var(--ink-4)', fontSize: 12, fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                    Chat is open. Make your first move.
+                  </p>
                 </div>
               )}
               {messages.map(m => {
                 if (m.content === '__mind_changed__') {
                   const isOwn = m.user_id === user?.id
                   return (
-                    <div key={m.id} className="self-center w-full max-w-[90%]">
-                      <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary/10 border border-primary/30 text-primary text-sm text-center justify-center">
-                        <span className="text-base">↩</span>
-                        <span className="font-medium">
+                    <div key={m.id} style={{ alignSelf: 'center', width: '100%', maxWidth: '90%' }}>
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px',
+                        background: 'oklch(0.55 0.22 25 / 0.08)', border: '1px solid oklch(0.55 0.22 25 / 0.25)',
+                        color: 'var(--color-primary)', fontSize: 13, justifyContent: 'center',
+                      }}>
+                        <Brain style={{ width: 13, height: 13 }} />
+                        <span style={{ fontWeight: 600 }}>
                           {isOwn ? 'You changed your mind' : 'They changed their mind'}
                         </span>
-                        {!isOwn && <span className="text-xs text-primary/70">— credited to their profile</span>}
+                        {!isOwn && <span style={{ fontSize: 11, opacity: 0.7 }}>— credited to their profile</span>}
                       </div>
                     </div>
                   )
                 }
                 const isOwn = m.user_id === user?.id
                 return (
-                  <div key={m.id} className={`flex flex-col gap-1 max-w-[78%] ${isOwn ? 'self-end items-end' : 'self-start items-start'}`}>
-                    <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${isOwn ? 'bg-primary text-primary-foreground rounded-br-sm' : 'bg-secondary text-foreground rounded-bl-sm border border-border'}`}>
-                      {m.content}
-                    </div>
+                  <div key={m.id} className={`msg ${isOwn ? 'self' : 'other'}`}>
+                    <div className="msg-bubble">{m.content}</div>
                     {!isOwn && (
                       <button
                         onClick={handleMindChanged}
                         disabled={mindChangedDone}
-                        title="They changed your mind — the highest compliment"
-                        className={`text-xs px-2 py-0.5 rounded transition-colors ${mindChangedDone ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:text-primary'}`}>
+                        style={{
+                          background: 'none', border: 'none', cursor: mindChangedDone ? 'default' : 'pointer',
+                          fontSize: 11, color: mindChangedDone ? 'var(--ink-4)' : 'var(--ink-3)',
+                          fontFamily: 'var(--font-mono)', padding: '2px 0',
+                          transition: 'color 0.1s',
+                        }}
+                        onMouseEnter={e => { if (!mindChangedDone) (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-primary)' }}
+                        onMouseLeave={e => { if (!mindChangedDone) (e.currentTarget as HTMLButtonElement).style.color = 'var(--ink-3)' }}
+                      >
                         {mindChangedDone ? '✓ changed my mind' : '↩ changed my mind'}
                       </button>
                     )}
@@ -367,126 +509,180 @@ export default function DebateRoom() {
 
             {/* In-chat refine panel */}
             {showRefinePanel && (
-              <div className="bg-secondary border border-border rounded-lg p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs text-muted-foreground uppercase tracking-widest">Refine your argument</p>
-                  <button onClick={() => setShowRefinePanel(false)} className="text-muted-foreground hover:text-foreground text-xs leading-none">✕</button>
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--rule)', padding: '16px 18px', marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
+                    Refine your argument
+                  </span>
+                  <button onClick={() => setShowRefinePanel(false)} style={{ background: 'none', border: 'none', color: 'var(--ink-3)', cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>✕</button>
                 </div>
                 <textarea
                   value={liveArg}
                   onChange={e => setLiveArg(e.target.value)}
-                  placeholder="Revise your argument with what you're learning..."
-                  className="w-full min-h-[96px] px-3 py-2 rounded-lg bg-background border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-colors resize-none"
+                  placeholder="Revise your argument with what you're learning…"
+                  style={{
+                    width: '100%', minHeight: 90, resize: 'vertical', padding: '10px 12px',
+                    background: 'var(--bg-2)', border: '1px solid var(--rule)', color: 'var(--ink)',
+                    fontSize: 13, lineHeight: 1.55, outline: 'none', boxSizing: 'border-box',
+                    fontFamily: 'inherit', transition: 'border-color 0.1s',
+                  }}
+                  onFocus={e => (e.currentTarget.style.borderColor = 'var(--ink-3)')}
+                  onBlur={e => (e.currentTarget.style.borderColor = 'var(--rule)')}
                 />
-                <button onClick={saveLiveRefinement} disabled={savingLive || !liveArg.trim()}
-                  className="w-full py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50">
-                  {savingLive ? 'Saving...' : 'Save revision'}
+                <button
+                  onClick={saveLiveRefinement}
+                  disabled={savingLive || !liveArg.trim()}
+                  className="dmb-btn sm"
+                  style={{ marginTop: 8, opacity: savingLive || !liveArg.trim() ? 0.4 : 1 }}
+                >
+                  {savingLive ? 'Saving…' : 'Save revision'}
                 </button>
               </div>
             )}
 
             {/* Input row */}
-            <div className="flex gap-2">
+            <div className="chat-input-row">
               <button
                 onClick={() => { if (!showRefinePanel) setLiveArg(myArg()); setShowRefinePanel(v => !v) }}
-                className="px-3 py-2.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-secondary text-xs transition-colors whitespace-nowrap">
+                className="dmb-btn ghost sm"
+                style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+              >
                 ✎ refine
               </button>
-              <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()}
-                placeholder="Make your point..."
-                className="flex-1 px-4 py-2.5 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-colors" />
-              <button onClick={sendMessage} disabled={sending}
-                className="px-5 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50">
+              <input
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && sendMessage()}
+                placeholder="Make your point…"
+                className="chat-input"
+              />
+              <button onClick={sendMessage} disabled={sending} className="dmb-btn sm" style={{ opacity: sending ? 0.5 : 1, flexShrink: 0 }}>
                 Send
               </button>
             </div>
 
             {!canLeave && (
-              <p className="text-muted-foreground text-xs text-center">Minimum 3 minutes — then you can leave</p>
+              <p style={{ textAlign: 'center', fontSize: 11, color: 'var(--ink-4)', marginTop: 12, fontFamily: 'var(--font-mono)' }}>
+                Minimum 3 minutes — then you can leave
+              </p>
             )}
-          </>
+          </div>
         )}
 
-        {/* ── Rating phase ── */}
+        {/* ── Rating phase ───────────────────────────────────── */}
         {phase === 'rating' && (
-          <>
-            <div className="space-y-1">
-              <p className="step-number">RATE YOUR OPPONENT</p>
-              <h2 className="font-display text-2xl text-foreground">Before you go</h2>
-              <p className="text-muted-foreground text-sm">Two quick ratings — not on who was right, on how they argued.</p>
+          <div>
+            <div style={{ marginBottom: 28 }}>
+              <p className="kicker">Rate your opponent</p>
+              <h2 className="page-title" style={{ fontSize: 'clamp(24px, 3vw, 32px)', marginBottom: 8 }}>Before you go</h2>
+              <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>
+                Two quick ratings — not on who was right, on how they argued.
+              </p>
             </div>
 
-            <div className="space-y-7 pt-2">
-              <div className="space-y-2">
-                <p className="text-foreground text-sm font-medium">How strong was their argument?</p>
-                <p className="text-muted-foreground text-xs">Rate the quality of reasoning regardless of whether you agree with their position.</p>
-                <div className="flex gap-3 pt-1">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 28, marginBottom: 32 }}>
+              {/* Argument quality */}
+              <div className="dmb-card" style={{ padding: '22px 24px' }}>
+                <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>How strong was their argument?</p>
+                <p style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 14 }}>Rate the quality of reasoning, regardless of whether you agree with their position.</p>
+                <div style={{ display: 'flex', gap: 6 }}>
                   {[1, 2, 3, 4, 5].map(n => (
                     <button key={n} onClick={() => setRatings(r => ({ ...r, argument: n }))}
-                      className={`text-2xl transition-all ${ratings.argument >= n ? 'opacity-100' : 'opacity-20'}`}
-                      style={{ color: 'hsl(38 92% 50%)' }}>★</button>
+                      style={{
+                        fontSize: 26, background: 'none', border: 'none', cursor: 'pointer', padding: '0 2px',
+                        color: ratings.argument >= n ? 'var(--color-primary)' : 'var(--ink-4)',
+                        transition: 'color 0.1s, transform 0.1s',
+                      }}
+                      onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1.2)'}
+                      onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1)'}
+                    >★</button>
                   ))}
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <p className="text-foreground text-sm font-medium">How did they conduct themselves?</p>
-                <p className="text-muted-foreground text-xs">Were they respectful, trying to articulate their side, and genuinely engaging with yours?</p>
-                <div className="flex gap-3 pt-1">
+              {/* Conduct */}
+              <div className="dmb-card" style={{ padding: '22px 24px' }}>
+                <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>How did they conduct themselves?</p>
+                <p style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 14 }}>Were they respectful, engaging with your points, and genuinely trying to articulate their side?</p>
+                <div style={{ display: 'flex', gap: 6 }}>
                   {[1, 2, 3, 4, 5].map(n => (
                     <button key={n} onClick={() => setRatings(r => ({ ...r, behavior: n }))}
-                      className={`text-2xl transition-all ${ratings.behavior >= n ? 'opacity-100' : 'opacity-20'}`}
-                      style={{ color: 'hsl(38 92% 50%)' }}>★</button>
+                      style={{
+                        fontSize: 26, background: 'none', border: 'none', cursor: 'pointer', padding: '0 2px',
+                        color: ratings.behavior >= n ? 'var(--color-primary)' : 'var(--ink-4)',
+                        transition: 'color 0.1s, transform 0.1s',
+                      }}
+                      onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1.2)'}
+                      onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1)'}
+                    >★</button>
                   ))}
                 </div>
               </div>
             </div>
 
-            <button onClick={submitRating} disabled={ratings.argument === 0 || ratings.behavior === 0}
-              className="w-full py-3 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-40">
-              Submit & refine my argument →
+            <button
+              onClick={submitRating}
+              disabled={ratings.argument === 0 || ratings.behavior === 0}
+              className="dmb-btn lg"
+              style={{ width: '100%', justifyContent: 'center', opacity: ratings.argument === 0 || ratings.behavior === 0 ? 0.4 : 1 }}
+            >
+              Submit &amp; refine my argument →
             </button>
-          </>
+          </div>
         )}
 
-        {/* ── Refine phase ── */}
+        {/* ── Refine phase ───────────────────────────────────── */}
         {phase === 'refine' && (
-          <>
-            <div className="space-y-1">
-              <p className="step-number">STEP 03</p>
-              <h2 className="font-display text-2xl text-foreground">Refine your argument</h2>
-              <p className="text-muted-foreground text-sm">You've debated. Now make it stronger.</p>
+          <div>
+            <div style={{ marginBottom: 28 }}>
+              <p className="kicker">Step 03 of 03</p>
+              <h2 className="page-title" style={{ fontSize: 'clamp(24px, 3vw, 32px)', marginBottom: 8 }}>Refine your argument</h2>
+              <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>You've debated. Now make it stronger.</p>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <p className="text-xs text-muted-foreground uppercase tracking-widest">Your original</p>
-                <div className="bg-secondary border border-border rounded-lg p-4 text-foreground text-sm leading-relaxed">{myArg()}</div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
+              <div>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>Your original</p>
+                <div className="dmb-card" style={{ padding: '16px 18px', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>{myArg()}</div>
               </div>
-              <div className="space-y-2">
-                <p className="text-xs text-muted-foreground uppercase tracking-widest">Their argument</p>
-                <div className="bg-secondary border border-border rounded-lg p-4 text-foreground text-sm leading-relaxed">{oppArg()}</div>
+              <div>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>Their argument</p>
+                <div className="dmb-card" style={{ padding: '16px 18px', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>{oppArg()}</div>
               </div>
             </div>
-            <textarea value={refinedArg} onChange={e => setRefinedArg(e.target.value)}
-              placeholder="Rewrite your argument with what you've learned..."
-              className="w-full min-h-[120px] px-4 py-3 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-colors resize-y" />
-            <div className="flex gap-3 justify-end">
-              <button onClick={() => navigate('/dashboard')} className="px-5 py-2.5 rounded-lg border border-border text-foreground text-sm font-medium hover:bg-secondary transition-colors">Skip</button>
-              <button onClick={saveAndFinish} className="px-5 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">Save & view profile →</button>
+
+            <textarea
+              value={refinedArg}
+              onChange={e => setRefinedArg(e.target.value)}
+              placeholder="Rewrite your argument with what you've learned…"
+              className="dmb-input dmb-textarea"
+              style={{ minHeight: 140, marginBottom: 16 }}
+            />
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={() => navigate('/dashboard')} className="dmb-btn ghost">
+                Skip
+              </button>
+              <button onClick={saveAndFinish} className="dmb-btn">
+                Save &amp; view profile →
+              </button>
             </div>
-          </>
+          </div>
         )}
 
-        {/* ── Ended phase ── */}
+        {/* ── Ended phase ────────────────────────────────────── */}
         {phase === 'ended' && (
-          <div className="text-center py-8 space-y-6">
-            <div className="space-y-2">
-              <h2 className="font-display text-2xl text-foreground">Debate ended</h2>
-              <p className="text-muted-foreground text-sm">Thanks for keeping it real.</p>
-            </div>
-            <div className="flex gap-3 justify-center">
-              <button onClick={() => navigate('/dashboard')} className="px-6 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors">Debate again</button>
-              <button onClick={() => navigate('/dashboard')} className="px-6 py-2.5 border border-border text-foreground rounded-lg text-sm font-medium hover:bg-secondary transition-colors">My profile</button>
+          <div style={{ textAlign: 'center', padding: '48px 24px' }}>
+            <p className="kicker" style={{ justifyContent: 'center' }}>Debate complete</p>
+            <h2 className="page-title" style={{ marginBottom: 12 }}>Well argued.</h2>
+            <p style={{ color: 'var(--ink-3)', fontSize: 14, marginBottom: 32 }}>Thanks for keeping it real.</p>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+              <button onClick={() => navigate('/dashboard')} className="dmb-btn">
+                Debate again
+              </button>
+              <button onClick={() => navigate('/dashboard')} className="dmb-btn ghost">
+                My profile
+              </button>
             </div>
           </div>
         )}

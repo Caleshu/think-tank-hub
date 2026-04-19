@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
-import { ArrowLeft, MessageSquare, Brain } from "lucide-react";
+import { ArrowLeft, Brain, MessageSquare, Sun, Moon } from "lucide-react";
 import { FeedArgument } from "@/types/feed";
 import ArgumentInteractionModal from "@/components/feed/ArgumentInteractionModal";
+import RotatingHint from "@/components/RotatingHint";
+import { useTheme } from "@/hooks/useTheme";
 
 type PublicProfile = {
   user_id: string;
@@ -33,6 +35,7 @@ type PinnedArgument = {
 const Profile = () => {
   const { username } = useParams<{ username: string }>();
   const navigate = useNavigate();
+  const { theme, toggleTheme } = useTheme();
   const [profileData, setProfileData] = useState<PublicProfile | null>(null);
   const [pinnedArgs, setPinnedArgs] = useState<PinnedArgument[]>([]);
   const [topicFilter, setTopicFilter] = useState<string>("all");
@@ -43,7 +46,6 @@ const Profile = () => {
 
   useEffect(() => {
     if (!username) return;
-
     const fetchProfile = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       setCurrentUserId(session?.user.id ?? null);
@@ -54,12 +56,7 @@ const Profile = () => {
         .eq("username", username)
         .single();
 
-      if (error || !prof) {
-        setNotFound(true);
-        setLoading(false);
-        return;
-      }
-
+      if (error || !prof) { setNotFound(true); setLoading(false); return; }
       setProfileData(prof);
 
       const { data: argsData } = await supabase
@@ -71,7 +68,6 @@ const Profile = () => {
 
       if (argsData) {
         const pinned = argsData as any[];
-        // Load current user's interactions for these arguments
         if (session?.user.id && pinned.length > 0) {
           const argIds = pinned.map((a) => a.id);
           const { data: myInts } = await (supabase as any)
@@ -86,28 +82,26 @@ const Profile = () => {
       }
       setLoading(false);
     };
-
     fetchProfile();
   }, [username]);
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center" }}>
+          <div className="w-6 h-6 border-2 border-t-transparent animate-spin mx-auto" style={{ borderColor: "var(--color-primary)", borderTopColor: "transparent", borderRadius: 0 }} />
+          <RotatingHint />
+        </div>
       </div>
     );
   }
 
   if (notFound) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4">
-        <p className="text-2xl text-foreground" style={{ fontFamily: "var(--font-display)" }}>
-          Profile not found
-        </p>
-        <p className="text-muted-foreground text-sm">
-          No user with the username "{username}" exists.
-        </p>
-        <Link to="/dashboard" className="text-primary hover:underline text-sm">
+      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 }}>
+        <p style={{ fontFamily: "var(--font-display)", fontSize: 28, color: "var(--ink)" }}>Profile not found</p>
+        <p style={{ color: "var(--ink-3)", fontSize: 14 }}>No user with the username "{username}" exists.</p>
+        <Link to="/dashboard" style={{ color: "var(--color-primary)", fontSize: 13, fontFamily: "var(--font-mono)", letterSpacing: "0.08em" }}>
           Back to dashboard
         </Link>
       </div>
@@ -115,148 +109,146 @@ const Profile = () => {
   }
 
   const isOwn = currentUserId === profileData!.user_id;
-
-  // Unique topics from pinned args for the filter
   const availableTopics = Array.from(
     new Map(pinnedArgs.map((a) => [a.topic_id, a.topics])).entries()
-  )
-    .filter(([, t]) => t)
-    .map(([id, t]) => ({ id, name: t!.name }));
+  ).filter(([, t]) => t).map(([id, t]) => ({ id, name: t!.name }));
 
-  const filtered =
-    topicFilter === "all"
-      ? pinnedArgs
-      : pinnedArgs.filter((a) => a.topic_id === topicFilter);
+  const filtered = topicFilter === "all" ? pinnedArgs : pinnedArgs.filter((a) => a.topic_id === topicFilter);
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b border-border px-6 py-4 flex items-center gap-4">
-        <button
-          onClick={() => navigate(-1)}
-          className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2 text-sm"
-        >
-          <ArrowLeft className="w-4 h-4" /> Back
+    <div style={{ minHeight: "100vh", background: "var(--bg)", color: "var(--ink)" }}>
+      {/* Topbar */}
+      <div className="topbar">
+        <button className="back-btn" onClick={() => navigate(-1)} style={{ margin: 0 }}>
+          <ArrowLeft style={{ width: 13, height: 13 }} /> Back
         </button>
-        <h1 className="text-xl" style={{ fontFamily: "var(--font-display)" }}>
-          <span className="text-primary italic">feels</span>
-        </h1>
-      </header>
+        <span className="logo" style={{ cursor: "default" }}>
+          <span className="dot" />
+          <span>Debate Me Bro</span>
+        </span>
+        <button className="icon-btn-pill" onClick={toggleTheme} title={theme === "dark" ? "Light mode" : "Dark mode"}>
+          {theme === "dark" ? <Sun style={{ width: 13, height: 13 }} /> : <Moon style={{ width: 13, height: 13 }} />}
+        </button>
+      </div>
 
-      <div className="max-w-4xl mx-auto px-6 py-10">
+      <div style={{ maxWidth: 860, margin: "0 auto", padding: "40px 24px 80px" }}>
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-          <div className="mb-8">
-            <h2 className="text-4xl text-foreground" style={{ fontFamily: "var(--font-display)" }}>
-              {profileData!.username}
-            </h2>
-            <p className="text-muted-foreground text-sm mt-1">Public beliefs</p>
+
+          {/* Profile header */}
+          <div style={{ marginBottom: 32 }}>
+            <p className="kicker">Public profile</p>
+            <h2 className="page-title">{profileData!.username}</h2>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
+          {/* Stats */}
+          <div className="stat-grid" style={{ marginBottom: 40 }}>
             {[
-              { label: "Reputation", value: profileData!.reputation.toFixed(1) },
+              { label: "Reputation", value: profileData!.reputation.toFixed(1), primary: true },
               { label: "Debates", value: profileData!.debates_count },
               { label: "Changed Minds", value: profileData!.changed_minds_count },
               { label: "Pinned Beliefs", value: pinnedArgs.length },
             ].map((s) => (
-              <div key={s.label} className="bg-secondary rounded-lg p-4 text-center">
-                <p className="text-2xl font-bold text-foreground">{s.value}</p>
-                <p className="text-muted-foreground text-xs mt-1">{s.label}</p>
+              <div key={s.label} className={`stat-tile${s.primary ? " primary-tile" : ""}`}>
+                <div className="stat-num">{s.value}</div>
+                <div className="stat-label">{s.label}</div>
               </div>
             ))}
           </div>
 
-          {/* Beliefs header + topic filter */}
-          <div className="flex items-center justify-between mb-6 gap-4">
-            <h3 className="text-2xl text-foreground" style={{ fontFamily: "var(--font-display)" }}>
-              Beliefs
-            </h3>
+          {/* Beliefs header + topic tabs */}
+          <div style={{ marginBottom: 8 }}>
+            <h3 className="section-title" style={{ marginBottom: 16 }}>Pinned Beliefs</h3>
             {availableTopics.length > 0 && (
-              <select
-                value={topicFilter}
-                onChange={(e) => setTopicFilter(e.target.value)}
-                className="bg-card border border-border text-foreground text-xs rounded px-3 py-1.5 focus:outline-none focus:border-primary"
-              >
-                <option value="all">All topics</option>
-                {availableTopics.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
+              <div style={{ display: "flex", borderBottom: "1px solid var(--rule)", marginBottom: 20, overflowX: "auto", scrollbarWidth: "none" }}>
+                {["all", ...availableTopics.map((t) => t.id)].map((val) => {
+                  const label = val === "all" ? "All" : availableTopics.find((t) => t.id === val)?.name ?? val;
+                  const isActive = topicFilter === val;
+                  return (
+                    <button
+                      key={val}
+                      onClick={() => setTopicFilter(val)}
+                      style={{
+                        background: "none", border: "none",
+                        borderBottom: `2px solid ${isActive ? "var(--color-primary)" : "transparent"}`,
+                        color: isActive ? "var(--ink)" : "var(--ink-3)",
+                        fontFamily: "var(--font-mono)", fontSize: 10,
+                        fontWeight: isActive ? 700 : 500,
+                        letterSpacing: "0.10em", textTransform: "uppercase",
+                        padding: "10px 16px 9px",
+                        cursor: "pointer", whiteSpace: "nowrap",
+                        transition: "color 0.1s, border-color 0.1s",
+                        marginBottom: -1,
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
 
+          {/* Argument list */}
           {pinnedArgs.length === 0 ? (
-            <div className="card-surface p-8 text-center">
-              <p className="text-muted-foreground">
+            <div className="dmb-card" style={{ textAlign: "center", padding: "48px 24px" }}>
+              <p style={{ color: "var(--ink-3)", fontSize: 14 }}>
                 {profileData!.username} hasn't pinned any beliefs yet.
               </p>
             </div>
           ) : filtered.length === 0 ? (
-            <div className="card-surface p-8 text-center">
-              <p className="text-muted-foreground">No beliefs on this topic.</p>
+            <div className="dmb-card" style={{ textAlign: "center", padding: "48px 24px" }}>
+              <p style={{ color: "var(--ink-3)", fontSize: 14 }}>No beliefs on this topic.</p>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {filtered.map((arg) => {
                 const avgStars = Number(arg.avg_stars ?? 0);
                 return (
                   <div
                     key={arg.id}
-                    className="card-surface p-5 cursor-pointer hover:border-primary/30 transition-colors"
+                    className="belief-card"
                     onClick={() => navigate(`/argument/${arg.id}`)}
                   >
-                    {/* Title row */}
-                    <div className="mb-2">
-                      <h4 className="text-foreground font-medium">{arg.title}</h4>
-                      <div className="flex items-center gap-3 mt-1 flex-wrap">
-                        <span className="text-xs text-muted-foreground">{arg.topics?.name}</span>
-                        <span
-                          className={`text-xs font-semibold px-2 py-0.5 rounded ${
-                            arg.stance === "for"
-                              ? "bg-green-500/10 text-green-400"
-                              : "bg-red-500/10 text-red-400"
-                          }`}
-                        >
-                          {arg.stance === "for" ? "FOR" : "AGAINST"}
-                        </span>
-                        <span className="text-xs font-mono text-primary">v{arg.version}</span>
+                    <div style={{ marginBottom: 10 }}>
+                      <h4 className="belief-title">{arg.title}</h4>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 12, color: "var(--ink-3)" }}>{arg.topics?.name}</span>
+                        <span className={`dmb-pill ${arg.stance}`}>{arg.stance === "for" ? "FOR" : "AGAINST"}</span>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-2)", padding: "2px 7px", background: "var(--rule)", borderRadius: 0 }}>v{arg.version}</span>
                       </div>
                     </div>
-
-                    {/* Content */}
-                    <p className="text-sm text-muted-foreground leading-relaxed mb-4">{arg.content}</p>
-
-                    {/* Stats + action row */}
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                        <span>
-                          <span className="text-amber-400">★</span>{" "}
+                    <p className="belief-body">{arg.content}</p>
+                    <div className="belief-foot">
+                      <div style={{ display: "flex", gap: 14 }}>
+                        <span className="stat-chip">
+                          <span style={{ color: "var(--color-primary)" }}>★</span>
                           {avgStars > 0 ? avgStars.toFixed(1) : "—"}
                         </span>
-                        <span className="flex items-center gap-1">
-                          <Brain className="w-3 h-3" />
+                        <span className="stat-chip">
+                          <Brain style={{ width: 11, height: 11 }} />
                           {arg.changed_minds_count} minds changed
                         </span>
                       </div>
-
-                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                         {!isOwn && (
                           <button
+                            className="dmb-btn ghost sm"
                             onClick={() => setInteractionArg({
                               ...arg,
                               stance: arg.stance as "for" | "against",
                               topic_name: arg.topics?.name,
                               username: profileData!.username,
                             })}
-                            className="text-xs font-medium text-muted-foreground hover:text-primary border border-border hover:border-primary/50 rounded px-3 py-1.5 transition-colors"
                           >
                             Rate
                           </button>
                         )}
                         <button
+                          className="dmb-btn ghost sm"
                           onClick={() => navigate(`/argument/${arg.id}`)}
-                          className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-primary border border-border hover:border-primary/50 rounded px-3 py-1.5 transition-colors"
+                          style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
                         >
-                          <MessageSquare className="w-3 h-3" />
+                          <MessageSquare style={{ width: 11, height: 11 }} />
                           {isOwn ? "View Thread" : "Debate"}
                         </button>
                       </div>
@@ -277,7 +269,7 @@ const Profile = () => {
                 a.id === updated.id
                   ? { ...a, my_interaction: updated.my_interaction, avg_stars: updated.avg_stars, changed_minds_count: updated.changed_minds_count }
                   : a
-              ))
+              ));
             }}
           />
         </motion.div>

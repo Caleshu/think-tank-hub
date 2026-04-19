@@ -2,13 +2,11 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { useTheme } from "@/hooks/useTheme";
 import {
   LogOut, Swords, Pencil, Check, X, Trash2, Plus,
-  Pin, PinOff, Search, User, Globe, Brain, MessageSquare,
+  Pin, PinOff, Search, Globe, Brain, MessageSquare, ChevronRight, ArrowLeft, Sun, Moon,
 } from "lucide-react";
 import { FeedArgument } from "@/types/feed";
 import FeedCard from "@/components/feed/FeedCard";
@@ -38,6 +36,7 @@ type Topic = {
   id: string;
   name: string;
   description: string;
+  category: string;
 };
 
 type ProfileResult = {
@@ -54,14 +53,20 @@ const Dashboard = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [editTitle, setEditTitle] = useState("");
-  const [tab, setTab] = useState<"beliefs" | "arguments" | "feed">("beliefs");
-  const [showNewArgForm, setShowNewArgForm] = useState(false);
+  const [tab, setTab] = useState<"beliefs" | "brainstorm" | "stored" | "debate" | "feed">("beliefs");
   const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null);
   const [stance, setStance] = useState<"for" | "against" | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
   const [saving, setSaving] = useState(false);
-  const [matchmakingId, setMatchmakingId] = useState<string | null>(null);
+  const [brainstormTopicSearch, setBrainstormTopicSearch] = useState("");
+  const [brainstormCategory, setBrainstormCategory] = useState<string>("all");
+
+  // Debate tab state
+  const [debateStep, setDebateStep] = useState<"topic" | "argument">("topic");
+  const [debateTopic, setDebateTopic] = useState<Topic | null>(null);
+  const [debateTopicSearch, setDebateTopicSearch] = useState("");
+  const [debateArgSearch, setDebateArgSearch] = useState("");
 
   const [beliefTopicFilter, setBeliefTopicFilter] = useState<string>("all");
 
@@ -80,6 +85,7 @@ const Dashboard = () => {
 
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -107,12 +113,12 @@ const Dashboard = () => {
     const [profileRes, argsRes, topicsRes] = await Promise.all([
       supabase.from("profiles").select("username, reputation, debates_count, changed_minds_count").eq("user_id", userId).single(),
       supabase.from("arguments").select("id, topic_id, stance, title, content, version, debates_used_in, pinned, posted, avg_stars, changed_minds_count, topics(name)").eq("user_id", userId).order("created_at", { ascending: false }),
-      supabase.from("topics").select("id, name, description").order("name"),
+      supabase.from("topics").select("*").order("name"),
     ]);
 
     if (profileRes.data) setProfile(profileRes.data);
     if (argsRes.data) setArgs(argsRes.data as any);
-    if (topicsRes.data) setTopics(topicsRes.data);
+    if (topicsRes.data) setTopics(topicsRes.data.map((t: any) => ({ ...t, category: t.category || "General" })));
   };
 
   const loadFeed = async () => {
@@ -126,7 +132,10 @@ const Dashboard = () => {
       .order("created_at", { ascending: false })
       .limit(50);
 
-    if (feedTopicFilter !== "all") query = query.eq("topic_id", feedTopicFilter);
+    if (feedTopicFilter !== "all") {
+      const categoryTopicIds = topics.filter((t) => t.category === feedTopicFilter).map((t) => t.id);
+      if (categoryTopicIds.length > 0) query = query.in("topic_id", categoryTopicIds);
+    }
     if (feedStanceFilter !== "all") query = query.eq("stance", feedStanceFilter);
 
     const { data: argData } = await query;
@@ -171,15 +180,19 @@ const Dashboard = () => {
   };
 
   const resetCreationFlow = () => {
-    setShowNewArgForm(false);
     setSelectedTopic(null);
     setStance(null);
     setNewTitle("");
     setNewContent("");
+    setBrainstormTopicSearch("");
   };
 
-  const switchTab = (t: "beliefs" | "arguments" | "feed") => {
+  const switchTab = (t: "beliefs" | "brainstorm" | "stored" | "debate" | "feed") => {
     resetCreationFlow();
+    setDebateStep("topic");
+    setDebateTopic(null);
+    setDebateTopicSearch("");
+    setDebateArgSearch("");
     setTab(t);
   };
 
@@ -273,13 +286,13 @@ const Dashboard = () => {
     } else if (data) {
       setArgs((prev) => [{ ...data, topics: { name: selectedTopic.name } }, ...prev]);
       resetCreationFlow();
+      setTab("stored");
       toast({ title: "Argument saved!" });
     }
     setSaving(false);
   };
 
-  const handleUseArgument = async (arg: Argument) => {
-    setMatchmakingId(arg.id);
+  const handleDebateStart = async (arg: Argument) => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { navigate("/auth"); return; }
 
@@ -287,21 +300,39 @@ const Dashboard = () => {
     const mySide = arg.stance === "for" ? "for" : "against";
     const oppSide = mySide === "for" ? "against" : "for";
 
+    // Only match with debates created in the last 10 minutes — avoids ghost rooms
+    const freshCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
     const { data: existing } = await supabase
       .from("debates").select("id")
       .eq("topic_id", arg.topic_id).eq("status", "waiting")
       .is(mySide === "for" ? "for_user_id" : "against_user_id", null)
       .not(oppSide === "for" ? "for_user_id" : "against_user_id", "is", null)
       .neq(oppSide === "for" ? "for_user_id" : "against_user_id", userId)
+      .gte("created_at", freshCutoff)
+      .order("created_at", { ascending: true })
       .limit(1).maybeSingle();
 
     if (existing) {
       const joinField = mySide === "for"
         ? { for_user_id: userId, for_argument: arg.content, status: "reading" }
         : { against_user_id: userId, against_argument: arg.content, status: "reading" };
-      await supabase.from("debates").update(joinField).eq("id", existing.id);
-      navigate(`/debate/${existing.id}`);
-      return;
+
+      // Atomic conditional update — only succeeds if the slot is still open and status still waiting
+      const { data: joined } = await supabase
+        .from("debates")
+        .update(joinField)
+        .eq("id", existing.id)
+        .eq("status", "waiting")
+        .is(mySide === "for" ? "for_user_id" : "against_user_id", null)
+        .select("id")
+        .single();
+
+      if (joined) {
+        navigate(`/debate/${joined.id}`);
+        return;
+      }
+      // Race condition — someone else claimed that slot, fall through to create a new debate
     }
 
     const insertData: any = {
@@ -317,81 +348,112 @@ const Dashboard = () => {
       navigate(`/debate/${created.id}`);
     } else {
       toast({ title: "Error", description: "Couldn't start debate. Try again.", variant: "destructive" });
-      setMatchmakingId(null);
     }
   };
 
   if (!profile) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: "var(--color-primary)", borderTopColor: "transparent" }} />
       </div>
     );
   }
 
   const pinnedArgs = args.filter((a) => a.pinned);
 
-  return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border px-6 py-4 flex items-center justify-between">
-        <h1 className="text-xl" style={{ fontFamily: "var(--font-display)" }}>
-          <span className="text-primary italic">feels</span>
-        </h1>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-muted-foreground">{profile.username}</span>
-          <Button variant="ghost" size="icon" onClick={handleSignOut}>
-            <LogOut className="w-4 h-4" />
-          </Button>
-        </div>
-      </header>
+  const tabLabels: Record<typeof tab, string> = {
+    beliefs: "My Profile",
+    brainstorm: "Brainstorm",
+    stored: "My Arguments",
+    debate: "Debate",
+    feed: "Explore",
+  };
 
-      {/* Tab bar */}
-      <div className="border-b border-border px-6 flex gap-0">
-        {(["beliefs", "arguments", "feed"] as const).map((t) => (
+  return (
+    <div style={{ minHeight: "100vh", background: "var(--bg)", color: "var(--ink)" }}>
+      {/* Flat topbar */}
+      <div className="topbar">
+        {/* Logo */}
+        <div className="logo" onClick={() => navigate("/")}>
+          <span className="dot" />
+          <span>Debate Me Bro</span>
+        </div>
+
+        {/* Tab pills */}
+        <div className="tab-pills">
+          {(["beliefs", "brainstorm", "stored", "debate", "feed"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => switchTab(t)}
+              className={`tab-pill${tab === t ? " active" : ""}`}
+            >
+              {t === "debate" && <Swords style={{ width: 12, height: 12 }} />}
+              {t === "feed" && <Search style={{ width: 12, height: 12 }} />}
+              {tabLabels[t]}
+            </button>
+          ))}
+        </div>
+
+        {/* User + controls */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button className="icon-btn-pill" onClick={toggleTheme} title={theme === "dark" ? "Light mode" : "Dark mode"}>
+            {theme === "dark"
+              ? <Sun style={{ width: 13, height: 13 }} />
+              : <Moon style={{ width: 13, height: 13 }} />}
+          </button>
+          <div className="user-chip">
+            <div className="user-avatar">{profile.username.charAt(0).toUpperCase()}</div>
+            <span style={{ maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {profile.username}
+            </span>
+          </div>
+          <button className="icon-btn-pill" onClick={handleSignOut} title="Sign out">
+            <LogOut style={{ width: 13, height: 13 }} />
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile tab bar */}
+      <div className="mobile-tabs">
+        {(["beliefs", "brainstorm", "stored", "debate", "feed"] as const).map((t) => (
           <button
             key={t}
             onClick={() => switchTab(t)}
-            className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
-              tab === t ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
+            className={`mobile-tab${tab === t ? " active" : ""}`}
           >
-            {t === "feed" && <Search className="w-4 h-4" />}
-            {t === "beliefs" ? "My Profile" : t === "arguments" ? "My Saved Arguments" : "Explore"}
+            {tabLabels[t]}
           </button>
         ))}
       </div>
 
-      <div className="max-w-4xl mx-auto px-6 py-10">
+      <div style={{ maxWidth: 1000, margin: "0 auto", padding: "32px 24px 80px", position: "relative", zIndex: 1 }}>
 
         {/* ── MY BELIEFS ── */}
         {tab === "beliefs" && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <div className="mb-8">
-              <h2 className="text-3xl text-foreground" style={{ fontFamily: "var(--font-display)" }}>
-                {profile.username}
-              </h2>
-              <p className="text-muted-foreground text-sm mt-1">Your profile & public beliefs</p>
+            <div style={{ marginBottom: 0 }}>
+              <p className="kicker">My Profile</p>
+              <h2 className="page-title">{profile.username}</h2>
+              <p className="page-lede">Your profile & public beliefs</p>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
+            {/* Stat grid */}
+            <div className="stat-grid">
               {[
-                { label: "Reputation", value: profile.reputation.toFixed(1) },
-                { label: "Debates", value: profile.debates_count },
-                { label: "Arguments", value: args.length },
-                { label: "Changed Minds", value: profile.changed_minds_count },
+                { label: "Reputation", value: profile.reputation.toFixed(1), primary: true },
+                { label: "Debates", value: profile.debates_count, primary: false },
+                { label: "Arguments", value: args.length, primary: false },
+                { label: "Changed Minds", value: profile.changed_minds_count, primary: false },
               ].map((s) => (
-                <div key={s.label} className="bg-secondary rounded-lg p-4 text-center">
-                  <p className="text-2xl font-bold text-foreground">{s.value}</p>
-                  <p className="text-muted-foreground text-xs mt-1">{s.label}</p>
+                <div key={s.label} className={`stat-tile${s.primary ? " primary-tile" : ""}`}>
+                  <div className="stat-num">{s.value}</div>
+                  <div className="stat-label">{s.label}</div>
                 </div>
               ))}
             </div>
 
-            <div className="flex items-center justify-between mb-6 gap-4">
-              <h3 className="text-2xl text-foreground" style={{ fontFamily: "var(--font-display)" }}>
-                Pinned Beliefs
-              </h3>
+            <div className="section-head">
+              <h3 className="section-title">Pinned Beliefs</h3>
               {pinnedArgs.length > 0 && (() => {
                 const pinTopics = Array.from(
                   new Map(pinnedArgs.map((a) => [a.topic_id, (a as any).topics?.name])).entries()
@@ -400,7 +462,7 @@ const Dashboard = () => {
                   <select
                     value={beliefTopicFilter}
                     onChange={(e) => setBeliefTopicFilter(e.target.value)}
-                    className="bg-card border border-border text-foreground text-xs rounded px-3 py-1.5 focus:outline-none focus:border-primary"
+                    style={{ background: "var(--surface)", border: "1px solid var(--rule)", color: "var(--ink)", fontSize: 12, borderRadius: 0, padding: "6px 12px", outline: "none", cursor: "pointer" }}
                   >
                     <option value="all">All topics</option>
                     {pinTopics.map(([id, name]) => (
@@ -412,60 +474,64 @@ const Dashboard = () => {
             </div>
 
             {pinnedArgs.length === 0 ? (
-              <div className="card-surface p-8 text-center">
-                <p className="text-muted-foreground">
+              <div className="dmb-card" style={{ textAlign: "center", padding: "40px 24px" }}>
+                <p style={{ color: "var(--ink-3)", fontSize: 14 }}>
                   No pinned beliefs yet.{" "}
-                  <button onClick={() => switchTab("arguments")} className="text-primary hover:underline">
+                  <button onClick={() => switchTab("stored")} style={{ color: "var(--color-primary)", background: "none", border: "none", cursor: "pointer", fontSize: 14 }}>
                     Pin an argument
                   </button>{" "}
                   to make it public.
                 </p>
               </div>
             ) : (beliefTopicFilter !== "all" && pinnedArgs.filter((a) => a.topic_id === beliefTopicFilter).length === 0) ? (
-              <div className="card-surface p-8 text-center">
-                <p className="text-muted-foreground">No pinned beliefs on this topic.</p>
+              <div className="dmb-card" style={{ textAlign: "center", padding: "40px 24px" }}>
+                <p style={{ color: "var(--ink-3)", fontSize: 14 }}>No pinned beliefs on this topic.</p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 {(beliefTopicFilter === "all" ? pinnedArgs : pinnedArgs.filter((a) => a.topic_id === beliefTopicFilter)).map((arg) => (
                   <div
                     key={arg.id}
-                    className="card-surface p-5 cursor-pointer hover:border-primary/30 transition-colors"
+                    className="belief-card"
                     onClick={() => navigate(`/argument/${arg.id}`)}
                   >
-                    <div className="flex items-start justify-between mb-2">
+                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
                       <div>
-                        <h4 className="text-foreground font-medium">{arg.title}</h4>
-                        <div className="flex items-center gap-3 mt-1">
-                          <span className="text-xs text-muted-foreground">{(arg as any).topics?.name}</span>
-                          <span className={`text-xs font-semibold px-2 py-0.5 rounded ${arg.stance === "for" ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`}>
-                            {arg.stance === "for" ? "FOR" : "AGAINST"}
-                          </span>
-                          <span className="text-xs px-2 py-0.5 rounded bg-primary/10 text-primary font-medium">Pinned</span>
+                        <h4 className="belief-title">{arg.title}</h4>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 12, color: "var(--ink-3)" }}>{(arg as any).topics?.name}</span>
+                          <span className={`dmb-pill ${arg.stance}`}>{arg.stance === "for" ? "FOR" : "AGAINST"}</span>
+                          <span className="dmb-pill accent">Pinned</span>
                         </div>
                       </div>
-                      <Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); togglePin(arg); }} title="Unpin">
-                        <PinOff className="w-3.5 h-3.5" />
-                      </Button>
+                      <button
+                        className="icon-btn-pill"
+                        onClick={(e) => { e.stopPropagation(); togglePin(arg); }}
+                        title="Unpin"
+                        style={{ flexShrink: 0 }}
+                      >
+                        <PinOff style={{ width: 13, height: 13 }} />
+                      </button>
                     </div>
-                    <p className="text-sm text-muted-foreground leading-relaxed mb-4">{arg.content}</p>
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                        <span>
-                          <span className="text-amber-400">★</span>{" "}
+                    <p className="belief-body">{arg.content}</p>
+                    <div className="belief-foot">
+                      <div style={{ display: "flex", gap: 14 }}>
+                        <span className="stat-chip">
+                          <span style={{ color: "var(--color-primary)" }}>★</span>
                           {(arg as any).avg_stars > 0 ? Number((arg as any).avg_stars).toFixed(1) : "—"}
                         </span>
-                        <span className="flex items-center gap-1">
-                          <Brain className="w-3 h-3" />
+                        <span className="stat-chip">
+                          <Brain style={{ width: 12, height: 12 }} />
                           {(arg as any).changed_minds_count ?? 0} minds changed
                         </span>
                       </div>
                       <div onClick={(e) => e.stopPropagation()}>
                         <Link
                           to={`/argument/${arg.id}`}
-                          className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-primary border border-border hover:border-primary/50 rounded px-3 py-1.5 transition-colors"
+                          className="dmb-btn ghost sm"
+                          style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 6 }}
                         >
-                          <MessageSquare className="w-3 h-3" />
+                          <MessageSquare style={{ width: 12, height: 12 }} />
                           View Thread
                         </Link>
                       </div>
@@ -475,149 +541,423 @@ const Dashboard = () => {
               </div>
             )}
 
-            <ArgumentInteractionModal
-              argument={interactionArg}
-              currentUserId={currentUserId}
-              open={!!interactionArg}
-              onClose={() => setInteractionArg(null)}
-              onInteracted={(updated) => setInteractionArg(updated)}
-            />
           </motion.div>
         )}
 
-        {/* ── MY SAVED ARGUMENTS ── */}
-        {tab === "arguments" && (
+        {/* ── BRAINSTORM ── */}
+        {tab === "brainstorm" && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            {!showNewArgForm ? (
+            {!selectedTopic ? (
               <>
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-3xl text-foreground" style={{ fontFamily: "var(--font-display)" }}>
-                    My Saved Arguments
-                  </h2>
-                  <Button size="sm" onClick={() => { setShowNewArgForm(true); setSelectedTopic(null); setStance(null); }}>
-                    <Plus className="w-4 h-4" /> New Argument
-                  </Button>
+                <div style={{ marginBottom: 20 }}>
+                  <h2 className="page-title">Brainstorm</h2>
+                  <p className="page-lede">Pick a topic and write your argument.</p>
                 </div>
+                {(() => {
+                  if (topics.length === 0) return (
+                    <div className="dmb-card" style={{ textAlign: "center", padding: "40px 24px" }}>
+                      <p style={{ color: "var(--ink-3)", fontSize: 14, marginBottom: 6 }}>No topics found.</p>
+                      <p style={{ color: "var(--ink-4)", fontSize: 12 }}>Run the database migration to seed topics.</p>
+                    </div>
+                  );
 
-                {args.length === 0 ? (
-                  <div className="card-surface p-8 text-center">
-                    <p className="text-muted-foreground">No arguments yet. Pick a topic and start writing!</p>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {args.map((arg) => (
-                      <div key={arg.id} className="card-surface p-5">
-                        {editingId === arg.id ? (
-                          <div className="space-y-3">
-                            <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="bg-background border-border" />
-                            <Textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="bg-background border-border min-h-[120px]" />
-                            <div className="flex gap-2">
-                              <Button size="sm" onClick={saveEdit}><Check className="w-3 h-3" /> Save</Button>
-                              <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}><X className="w-3 h-3" /> Cancel</Button>
-                            </div>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="flex items-start justify-between mb-2">
-                              <div>
-                                <h3 className="text-foreground font-medium">{arg.title}</h3>
-                                <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                  <span className="text-xs text-muted-foreground">{(arg as any).topics?.name}</span>
-                                  <span className={`text-xs font-semibold px-2 py-0.5 rounded ${arg.stance === "for" ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`}>
-                                    {arg.stance === "for" ? "FOR" : "AGAINST"}
-                                  </span>
-                                  <span className="text-xs text-primary font-mono">v{arg.version}</span>
-                                  {arg.pinned && <span className="text-xs px-2 py-0.5 rounded bg-primary/10 text-primary font-medium">Pinned</span>}
-                                  {arg.posted && <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 font-medium">Posted</span>}
-                                </div>
-                              </div>
-                              <div className="flex gap-1">
-                                <Button size="icon" variant="ghost" onClick={() => togglePosted(arg)} title={arg.posted ? "Remove from feed" : "Post to feed"}>
-                                  <Globe className={`w-3.5 h-3.5 ${arg.posted ? "text-blue-400" : ""}`} />
-                                </Button>
-                                <Button size="icon" variant="ghost" onClick={() => togglePin(arg)} title={arg.pinned ? "Unpin" : "Pin to beliefs"}>
-                                  {arg.pinned ? <PinOff className="w-3.5 h-3.5 text-primary" /> : <Pin className="w-3.5 h-3.5" />}
-                                </Button>
-                                <Button size="icon" variant="ghost" onClick={() => startEdit(arg)}>
-                                  <Pencil className="w-3.5 h-3.5" />
-                                </Button>
-                                <Button size="icon" variant="ghost" onClick={() => deleteArg(arg.id)}>
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </Button>
-                              </div>
-                            </div>
-                            <p className="text-sm text-muted-foreground leading-relaxed mb-3">{arg.content}</p>
-                            <Button size="sm" onClick={() => handleUseArgument(arg)} disabled={matchmakingId === arg.id}>
-                              <Swords className="w-3.5 h-3.5" />
-                              {matchmakingId === arg.id ? "Finding opponent..." : "Use This Argument"}
-                            </Button>
-                          </>
-                        )}
+                  const categories = Array.from(new Set(topics.map((t) => t.category)));
+                  const q = brainstormTopicSearch.toLowerCase();
+                  const isSearching = q.length > 0;
+
+                  // When searching, show all matching topics; otherwise filter by selected category
+                  const visibleTopics = topics.filter((t) => {
+                    const matchesSearch = !isSearching || t.name.toLowerCase().includes(q) || t.category.toLowerCase().includes(q);
+                    const matchesCategory = isSearching || brainstormCategory === "all" || t.category === brainstormCategory;
+                    return matchesSearch && matchesCategory;
+                  });
+
+                  return (
+                    <>
+                      {/* Search */}
+                      <div className="search-wrap" style={{ marginBottom: 16 }}>
+                        <Search className="search-ico" />
+                        <input
+                          className="dmb-input"
+                          placeholder="Search topics…"
+                          value={brainstormTopicSearch}
+                          onChange={(e) => setBrainstormTopicSearch(e.target.value)}
+                        />
                       </div>
-                    ))}
-                  </div>
-                )}
+
+                      {/* Category tabs — hidden while searching */}
+                      {!isSearching && (
+                        <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: 20, overflowX: "auto", scrollbarWidth: "none" }}>
+                          {["all", ...categories].map((cat) => {
+                            const isActive = brainstormCategory === cat;
+                            return (
+                              <button
+                                key={cat}
+                                onClick={() => setBrainstormCategory(cat)}
+                                style={{
+                                  background: "none", border: "none", borderBottom: `2px solid ${isActive ? "var(--color-primary)" : "transparent"}`,
+                                  color: isActive ? "var(--ink)" : "var(--ink-3)",
+                                  fontFamily: "var(--font-mono)", fontSize: 10,
+                                  fontWeight: isActive ? 700 : 500,
+                                  letterSpacing: "0.10em", textTransform: "uppercase",
+                                  padding: "10px 16px 9px",
+                                  cursor: "pointer", whiteSpace: "nowrap",
+                                  transition: "color 0.1s, border-color 0.1s",
+                                  marginBottom: -1,
+                                }}
+                              >
+                                {cat === "all" ? "All" : cat}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Topic list */}
+                      {visibleTopics.length === 0 ? (
+                        <p style={{ color: "var(--ink-3)", fontSize: 14 }}>
+                          {isSearching ? `No topics match "${brainstormTopicSearch}"` : "No topics in this category."}
+                        </p>
+                      ) : (
+                        <div className="topic-list">
+                          {visibleTopics.map((t, idx) => {
+                            const count = args.filter((a) => a.topic_id === t.id).length;
+                            return (
+                              <button key={t.id} className="topic-row" onClick={() => setSelectedTopic(t)}>
+                                <span className="topic-num">{String(idx + 1).padStart(2, "0")}</span>
+                                <span className="topic-text">{t.name}</span>
+                                <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                                  {count > 0 && <span className="dmb-pill accent">✓ {count}</span>}
+                                  <span className="topic-arrow"><ChevronRight style={{ width: 12, height: 12 }} /></span>
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </>
+            ) : !stance ? (
+              <>
+                <button className="back-btn" onClick={() => setSelectedTopic(null)}>
+                  <ArrowLeft style={{ width: 14, height: 14 }} /> Back to topics
+                </button>
+                <p className="kicker">{selectedTopic.category}</p>
+                <h2 style={{ fontFamily: "var(--font-display)", fontSize: 28, color: "var(--ink)", letterSpacing: "-0.02em", margin: "0 0 8px" }}>
+                  {selectedTopic.name}
+                </h2>
+                <p style={{ color: "var(--ink-3)", fontSize: 14, marginBottom: 0 }}>Which side are you on?</p>
+                <div className="stance-grid">
+                  <button className="stance-card for" onClick={() => setStance("for")}>
+                    <div className="stance-glyph">👍</div>
+                    <div className="stance-label" style={{ color: "var(--mint-ink)" }}>FOR</div>
+                  </button>
+                  <button className="stance-card against" onClick={() => setStance("against")}>
+                    <div className="stance-glyph">👎</div>
+                    <div className="stance-label" style={{ color: "var(--coral-ink)" }}>AGAINST</div>
+                  </button>
+                </div>
               </>
             ) : (
               <>
-                {!selectedTopic ? (
-                  <>
-                    <button onClick={resetCreationFlow} className="text-muted-foreground hover:text-foreground text-sm mb-6 inline-block">← Back to my arguments</button>
-                    <h2 className="text-3xl text-foreground mb-2" style={{ fontFamily: "var(--font-display)" }}>Pick a topic</h2>
-                    <p className="text-muted-foreground mb-8">Choose what you want to argue about.</p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {topics.map((t) => {
-                        const topicArgs = args.filter((a) => a.topic_id === t.id);
-                        return (
-                          <button key={t.id} onClick={() => setSelectedTopic(t)} className="card-surface p-5 text-left hover:border-primary/50 transition-colors group">
-                            <h3 className="text-foreground font-medium group-hover:text-primary transition-colors">{t.name}</h3>
-                            <p className="text-xs text-muted-foreground mt-1">{t.description}</p>
-                            {topicArgs.length > 0 && (
-                              <p className="text-xs text-primary mt-2 font-mono">
-                                ✓ {topicArgs.length} argument{topicArgs.length > 1 ? "s" : ""} saved
-                                {topicArgs.some((a) => a.pinned) ? " · Pinned" : ""}
-                                {topicArgs.some((a) => a.posted) ? " · Posted" : ""}
-                              </p>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </>
-                ) : !stance ? (
-                  <>
-                    <button onClick={() => setSelectedTopic(null)} className="text-muted-foreground hover:text-foreground text-sm mb-6 inline-block">← Back to topics</button>
-                    <h2 className="text-3xl text-foreground mb-2" style={{ fontFamily: "var(--font-display)" }}>{selectedTopic.name}</h2>
-                    <p className="text-muted-foreground mb-8">Which side are you on?</p>
-                    <div className="grid grid-cols-2 gap-4">
-                      <button onClick={() => setStance("for")} className="card-surface p-8 text-center hover:border-green-500/50 transition-colors group">
-                        <span className="text-3xl mb-2 block">👍</span>
-                        <span className="text-foreground font-semibold group-hover:text-green-400 transition-colors">FOR</span>
-                      </button>
-                      <button onClick={() => setStance("against")} className="card-surface p-8 text-center hover:border-red-500/50 transition-colors group">
-                        <span className="text-3xl mb-2 block">👎</span>
-                        <span className="text-foreground font-semibold group-hover:text-red-400 transition-colors">AGAINST</span>
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <button onClick={() => setStance(null)} className="text-muted-foreground hover:text-foreground text-sm mb-6 inline-block">← Back to stance</button>
-                    <h2 className="text-3xl text-foreground mb-1" style={{ fontFamily: "var(--font-display)" }}>Write your argument</h2>
-                    <p className="text-muted-foreground mb-8">
-                      {selectedTopic.name} · <span className={stance === "for" ? "text-green-400" : "text-red-400"}>{stance.toUpperCase()}</span>
-                    </p>
-                    <div className="space-y-4">
-                      <Input placeholder="Give your argument a title…" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} className="bg-card border-border h-12" />
-                      <Textarea placeholder="Write your opening argument…" value={newContent} onChange={(e) => setNewContent(e.target.value)} className="bg-card border-border min-h-[200px]" />
-                      <Button onClick={submitNewArgument} disabled={saving || !newTitle.trim() || !newContent.trim()} className="h-12 px-8">
-                        {saving ? "Saving…" : "Save Argument"}
-                      </Button>
-                    </div>
-                  </>
-                )}
+                <button className="back-btn" onClick={() => setStance(null)}>
+                  <ArrowLeft style={{ width: 14, height: 14 }} /> Back
+                </button>
+                <p className="kicker">{selectedTopic.category}</p>
+                <h2 style={{ fontFamily: "var(--font-display)", fontSize: 28, color: "var(--ink)", letterSpacing: "-0.02em", margin: "0 0 6px" }}>
+                  {selectedTopic.name}
+                </h2>
+                <div style={{ marginBottom: 24 }}>
+                  <span className={`dmb-pill ${stance}`}>{stance.toUpperCase()}</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <input
+                    className="dmb-input"
+                    placeholder="Give your argument a title…"
+                    value={newTitle}
+                    onChange={(e) => setNewTitle(e.target.value)}
+                    style={{ height: 48, fontSize: 15 }}
+                  />
+                  <textarea
+                    className="dmb-input dmb-textarea"
+                    placeholder="Write your opening argument…"
+                    value={newContent}
+                    onChange={(e) => setNewContent(e.target.value)}
+                  />
+                  <button
+                    className="dmb-btn lg"
+                    onClick={submitNewArgument}
+                    disabled={saving || !newTitle.trim() || !newContent.trim()}
+                    style={{ alignSelf: "flex-start" }}
+                  >
+                    {saving ? "Saving…" : "Save Argument"}
+                  </button>
+                </div>
               </>
             )}
+          </motion.div>
+        )}
+
+        {/* ── MY STORED ARGUMENTS ── */}
+        {tab === "stored" && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <div className="section-head">
+              <div>
+                <h2 className="page-title">My Arguments</h2>
+                <p className="page-lede">{args.length} saved</p>
+              </div>
+              <button className="dmb-btn sm" onClick={() => switchTab("brainstorm")}>
+                <Plus style={{ width: 13, height: 13 }} /> New
+              </button>
+            </div>
+            {args.length === 0 ? (
+              <div className="dmb-card" style={{ textAlign: "center", padding: "48px 24px" }}>
+                <p style={{ color: "var(--ink-3)", fontSize: 14, marginBottom: 10 }}>No arguments saved yet.</p>
+                <button onClick={() => switchTab("brainstorm")} style={{ color: "var(--color-primary)", background: "none", border: "none", cursor: "pointer", fontSize: 14 }}>
+                  Go brainstorm one →
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {args.map((arg) => (
+                  <div key={arg.id} className="dmb-card" style={{ padding: "18px 22px" }}>
+                    {editingId === arg.id ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        <input
+                          value={editTitle}
+                          onChange={(e) => setEditTitle(e.target.value)}
+                          className="dmb-input"
+                          style={{ height: 44 }}
+                        />
+                        <textarea
+                          value={editContent}
+                          onChange={(e) => setEditContent(e.target.value)}
+                          className="dmb-input dmb-textarea"
+                          style={{ minHeight: 120 }}
+                        />
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button className="dmb-btn sm" onClick={saveEdit}><Check style={{ width: 12, height: 12 }} /> Save</button>
+                          <button className="dmb-btn ghost sm" onClick={() => setEditingId(null)}><X style={{ width: 12, height: 12 }} /> Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <h3 style={{ fontFamily: "var(--font-display)", fontSize: 18, color: "var(--ink)", margin: "0 0 6px", lineHeight: 1.3 }}>{arg.title}</h3>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 11, color: "var(--ink-3)" }}>{(arg as any).topics?.name}</span>
+                              <span className={`dmb-pill ${arg.stance}`}>{arg.stance === "for" ? "FOR" : "AGAINST"}</span>
+                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-2)", padding: "2px 7px", background: "var(--rule)", borderRadius: 0 }}>v{arg.version}</span>
+                              {arg.pinned && <span className="dmb-pill accent">Pinned</span>}
+                              {arg.posted && <span className="dmb-pill neutral">Posted</span>}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                            <button className="icon-btn-pill" onClick={() => togglePosted(arg)} title={arg.posted ? "Remove from feed" : "Post to feed"}>
+                              <Globe style={{ width: 13, height: 13, color: arg.posted ? "var(--color-primary)" : undefined }} />
+                            </button>
+                            <button className="icon-btn-pill" onClick={() => togglePin(arg)} title={arg.pinned ? "Unpin" : "Pin to profile"}>
+                              {arg.pinned ? <PinOff style={{ width: 13, height: 13, color: "var(--color-primary)" }} /> : <Pin style={{ width: 13, height: 13 }} />}
+                            </button>
+                            <button className="icon-btn-pill" onClick={() => startEdit(arg)}>
+                              <Pencil style={{ width: 13, height: 13 }} />
+                            </button>
+                            <button className="icon-btn-pill" onClick={() => deleteArg(arg.id)}>
+                              <Trash2 style={{ width: 13, height: 13 }} />
+                            </button>
+                          </div>
+                        </div>
+                        <p style={{ fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6, margin: 0 }}>{arg.content}</p>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {/* ── DEBATE ── */}
+        {tab === "debate" && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+
+            {/* Step: Pick topic */}
+            {debateStep === "topic" && (
+              <>
+                <div style={{ marginBottom: 24 }}>
+                  <h2 className="page-title">Choose a topic <em>to debate</em></h2>
+                  <p className="page-lede">Pick the topic you want to argue about.</p>
+                </div>
+
+                {(() => {
+                  if (topics.length === 0) return (
+                    <div className="dmb-card" style={{ textAlign: "center", padding: "40px 24px" }}>
+                      <p style={{ color: "var(--ink-3)", fontSize: 14 }}>No topics found.</p>
+                    </div>
+                  );
+
+                  const categories = Array.from(new Set(topics.map((t) => t.category)));
+                  const q = debateTopicSearch.toLowerCase();
+                  const isSearching = q.length > 0;
+
+                  const visibleTopics = topics.filter((t) => {
+                    const matchesSearch = !isSearching || t.name.toLowerCase().includes(q) || t.category.toLowerCase().includes(q);
+                    const matchesCategory = isSearching || brainstormCategory === "all" || t.category === brainstormCategory;
+                    return matchesSearch && matchesCategory;
+                  });
+
+                  return (
+                    <>
+                      <div className="search-wrap" style={{ marginBottom: 16 }}>
+                        <Search className="search-ico" />
+                        <input
+                          className="dmb-input"
+                          placeholder="Search topics…"
+                          value={debateTopicSearch}
+                          onChange={(e) => setDebateTopicSearch(e.target.value)}
+                        />
+                      </div>
+
+                      {!isSearching && (
+                        <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: 20, overflowX: "auto", scrollbarWidth: "none" }}>
+                          {["all", ...categories].map((cat) => {
+                            const isActive = brainstormCategory === cat;
+                            return (
+                              <button
+                                key={cat}
+                                onClick={() => setBrainstormCategory(cat)}
+                                style={{
+                                  background: "none", border: "none", borderBottom: `2px solid ${isActive ? "var(--color-primary)" : "transparent"}`,
+                                  color: isActive ? "var(--ink)" : "var(--ink-3)",
+                                  fontFamily: "var(--font-mono)", fontSize: 10,
+                                  fontWeight: isActive ? 700 : 500,
+                                  letterSpacing: "0.10em", textTransform: "uppercase",
+                                  padding: "10px 16px 9px",
+                                  cursor: "pointer", whiteSpace: "nowrap",
+                                  transition: "color 0.1s, border-color 0.1s",
+                                  marginBottom: -1,
+                                }}
+                              >
+                                {cat === "all" ? "All" : cat}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {visibleTopics.length === 0 ? (
+                        <p style={{ color: "var(--ink-3)", fontSize: 14 }}>
+                          {isSearching ? `No topics match "${debateTopicSearch}"` : "No topics in this category."}
+                        </p>
+                      ) : (
+                        <div className="topic-list">
+                          {visibleTopics.map((t, idx) => {
+                            const topicArgs = args.filter((a) => a.topic_id === t.id);
+                            return (
+                              <button
+                                key={t.id}
+                                className="topic-row"
+                                onClick={() => { setDebateTopic(t); setDebateStep("argument"); setDebateArgSearch(""); }}
+                              >
+                                <span className="topic-num">{String(idx + 1).padStart(2, "0")}</span>
+                                <span className="topic-text">{t.name}</span>
+                                <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                                  {topicArgs.length > 0 && <span className="dmb-pill accent">✓ {topicArgs.length}</span>}
+                                  <span className="topic-arrow"><ChevronRight style={{ width: 12, height: 12 }} /></span>
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </>
+            )}
+
+            {/* Step: Pick argument */}
+            {debateStep === "argument" && debateTopic && (
+              <>
+                <button className="back-btn" onClick={() => { setDebateStep("topic"); setDebateTopic(null); }}>
+                  <ArrowLeft style={{ width: 14, height: 14 }} /> Back to topics
+                </button>
+
+                <p className="kicker">{debateTopic.category}</p>
+                <h2 style={{ fontFamily: "var(--font-display)", fontSize: 28, color: "var(--ink)", letterSpacing: "-0.02em", margin: "0 0 6px" }}>
+                  {debateTopic.name}
+                </h2>
+                <p style={{ color: "var(--ink-3)", fontSize: 14, marginBottom: 20 }}>Select the argument you want to use in this debate.</p>
+
+                {(() => {
+                  const topicArgs = args.filter((a) => a.topic_id === debateTopic.id);
+                  const filtered = topicArgs.filter((a) =>
+                    a.title.toLowerCase().includes(debateArgSearch.toLowerCase()) ||
+                    a.content.toLowerCase().includes(debateArgSearch.toLowerCase())
+                  );
+
+                  if (topicArgs.length === 0) {
+                    return (
+                      <div className="dmb-card" style={{ textAlign: "center", padding: "48px 24px" }}>
+                        <p style={{ color: "var(--ink-3)", fontSize: 14, marginBottom: 10 }}>
+                          You don't have any saved arguments for this topic yet.
+                        </p>
+                        <button
+                          onClick={() => switchTab("brainstorm")}
+                          style={{ color: "var(--color-primary)", background: "none", border: "none", cursor: "pointer", fontSize: 14 }}
+                        >
+                          Go write one →
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <>
+                      <div className="search-wrap" style={{ marginBottom: 16 }}>
+                        <Search className="search-ico" />
+                        <input
+                          className="dmb-input"
+                          placeholder="Search your arguments…"
+                          value={debateArgSearch}
+                          onChange={(e) => setDebateArgSearch(e.target.value)}
+                        />
+                      </div>
+
+                      {filtered.length === 0 ? (
+                        <p style={{ color: "var(--ink-3)", fontSize: 14 }}>No arguments match "{debateArgSearch}"</p>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                          {filtered.map((arg) => (
+                            <button
+                              key={arg.id}
+                              onClick={() => handleDebateStart(arg)}
+                              className="dmb-card hoverable"
+                              style={{ textAlign: "left", width: "100%", cursor: "pointer" }}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                                <span className={`dmb-pill ${arg.stance}`}>{arg.stance === "for" ? "FOR" : "AGAINST"}</span>
+                                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-2)", padding: "2px 7px", background: "var(--rule)", borderRadius: 0 }}>v{arg.version}</span>
+                                {arg.pinned && <span className="dmb-pill accent">Pinned</span>}
+                                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--ink-3)" }}>
+                                  Use this <ChevronRight style={{ width: 12, height: 12 }} />
+                                </span>
+                              </div>
+                              <h3 style={{ fontFamily: "var(--font-display)", fontSize: 18, color: "var(--ink)", margin: "0 0 6px" }}>{arg.title}</h3>
+                              <p style={{ fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6, margin: 0, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>{arg.content}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </>
+            )}
+
           </motion.div>
         )}
 
@@ -625,29 +965,27 @@ const Dashboard = () => {
         {tab === "feed" && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
             {/* User search */}
-            <div className="mb-8">
-              <h2 className="text-3xl text-foreground mb-2" style={{ fontFamily: "var(--font-display)" }}>Explore</h2>
-              <div className="relative mb-4">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
+            <div style={{ marginBottom: 28 }}>
+              <h2 className="page-title" style={{ marginBottom: 16 }}>Explore</h2>
+              <div className="search-wrap" style={{ marginBottom: 14 }}>
+                <Search className="search-ico" />
+                <input
+                  className="dmb-input"
                   placeholder="Search for a thinker by username…"
                   value={feedQuery}
                   onChange={(e) => { const v = e.target.value; setFeedQuery(v); searchFeed(v); }}
-                  className="bg-card border-border h-10 pl-10"
                 />
               </div>
-              {feedSearching && <div className="flex justify-center py-3"><div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>}
+              {feedSearching && <div style={{ display: "flex", justifyContent: "center", padding: "12px 0" }}><div className="w-4 h-4 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: "var(--color-primary)", borderTopColor: "transparent" }} /></div>}
               {feedResults.length > 0 && (
-                <div className="space-y-2 mb-6">
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
                   {feedResults.map((r) => (
-                    <Link key={r.username} to={`/profile/${r.username}`} className="card-surface p-3 flex items-center justify-between hover:border-primary/50 transition-colors">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
-                          <User className="w-3.5 h-3.5 text-muted-foreground" />
-                        </div>
-                        <span className="text-foreground text-sm font-medium">{r.username}</span>
+                    <Link key={r.username} to={`/profile/${r.username}`} className="dmb-card" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", textDecoration: "none" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div className="user-avatar" style={{ width: 34, height: 34, fontSize: 15 }}>{r.username.charAt(0).toUpperCase()}</div>
+                        <span style={{ color: "var(--ink)", fontSize: 14, fontWeight: 500 }}>{r.username}</span>
                       </div>
-                      <div className="flex gap-4 text-xs text-muted-foreground">
+                      <div style={{ display: "flex", gap: 14, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)" }}>
                         <span>{r.reputation.toFixed(1)} rep</span>
                         <span>{r.debates_count} debates</span>
                       </div>
@@ -656,49 +994,75 @@ const Dashboard = () => {
                 </div>
               )}
               {!feedSearching && feedQuery.trim() && feedResults.length === 0 && (
-                <p className="text-xs text-muted-foreground mb-6">No users found matching "{feedQuery}"</p>
+                <p style={{ color: "var(--ink-4)", fontSize: 12, marginBottom: 20 }}>No users found matching "{feedQuery}"</p>
               )}
             </div>
 
             {/* Feed filters */}
-            <div className="flex items-center gap-3 mb-6 flex-wrap">
-              <h3 className="text-lg text-foreground mr-auto" style={{ fontFamily: "var(--font-display)" }}>
-                Public Arguments
-              </h3>
-              {/* Topic filter */}
-              <select
-                value={feedTopicFilter}
-                onChange={(e) => setFeedTopicFilter(e.target.value)}
-                className="bg-card border border-border text-foreground text-xs rounded px-3 py-1.5 focus:outline-none focus:border-primary"
-              >
-                <option value="all">All topics</option>
-                {topics.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
-              {/* Stance filter */}
-              <div className="flex rounded overflow-hidden border border-border text-xs">
-                {(["all", "for", "against"] as const).map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setFeedStanceFilter(s)}
-                    className={`px-3 py-1.5 transition-colors ${feedStanceFilter === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                  >
-                    {s === "all" ? "All" : s === "for" ? "FOR" : "AGAINST"}
-                  </button>
-                ))}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+                <h3 className="section-title" style={{ fontSize: 22, margin: 0 }}>Public Arguments</h3>
+                {/* Stance filter */}
+                <div style={{ display: "flex", border: "1px solid var(--rule)" }}>
+                  {(["all", "for", "against"] as const).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setFeedStanceFilter(s)}
+                      style={{
+                        background: feedStanceFilter === s ? "var(--color-primary)" : "transparent",
+                        color: feedStanceFilter === s ? "var(--color-primary-ink)" : "var(--ink-3)",
+                        border: "none", borderRight: s !== "against" ? "1px solid var(--rule)" : "none",
+                        borderRadius: 0, padding: "6px 14px",
+                        fontSize: 10, fontWeight: 700, letterSpacing: "0.10em", textTransform: "uppercase",
+                        fontFamily: "var(--font-mono)", cursor: "pointer", transition: "background 0.1s, color 0.1s",
+                      }}
+                    >
+                      {s === "all" ? "All" : s === "for" ? "For" : "Against"}
+                    </button>
+                  ))}
+                </div>
               </div>
+              {/* Category tabs */}
+              {topics.length > 0 && (
+                <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", overflowX: "auto", scrollbarWidth: "none" }}>
+                  {["all", ...Array.from(new Set(topics.map((t) => t.category)))].map((cat) => {
+                    const isActive = feedTopicFilter === cat;
+                    return (
+                      <button
+                        key={cat}
+                        onClick={() => setFeedTopicFilter(cat)}
+                        style={{
+                          background: "none", border: "none",
+                          borderBottom: `2px solid ${isActive ? "var(--color-primary)" : "transparent"}`,
+                          color: isActive ? "var(--ink)" : "var(--ink-3)",
+                          fontFamily: "var(--font-mono)", fontSize: 10,
+                          fontWeight: isActive ? 700 : 500,
+                          letterSpacing: "0.10em", textTransform: "uppercase",
+                          padding: "10px 16px 9px",
+                          cursor: "pointer", whiteSpace: "nowrap",
+                          transition: "color 0.1s, border-color 0.1s",
+                          marginBottom: -1,
+                        }}
+                      >
+                        {cat === "all" ? "All" : cat}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Feed list */}
             {feedLoading ? (
-              <div className="flex justify-center py-12">
-                <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <div style={{ display: "flex", justifyContent: "center", padding: "48px 0" }}>
+                <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: "var(--color-primary)", borderTopColor: "transparent" }} />
               </div>
             ) : feedArgs.length === 0 ? (
-              <div className="card-surface p-10 text-center">
-                <p className="text-muted-foreground">No arguments posted yet. Post yours from My Saved Arguments!</p>
+              <div className="dmb-card" style={{ textAlign: "center", padding: "48px 24px" }}>
+                <p style={{ color: "var(--ink-3)", fontSize: 14 }}>No arguments posted yet. Post yours from My Arguments!</p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 {feedArgs.map((arg) => (
                   <FeedCard
                     key={arg.id}
