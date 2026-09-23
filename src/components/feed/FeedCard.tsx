@@ -32,74 +32,58 @@ export default function FeedCard({
   }
 
   return (
-    <div
-      className="card-surface p-5 cursor-pointer hover:border-primary/30 transition-colors"
-      onClick={handleCardClick}
-    >
-      {/* Top row: username + topic + stance */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
+    <div className="arg-card" onClick={handleCardClick}>
+      {/* Top row */}
+      <div className="arg-byline">
+        <div className="arg-avatar">{(argument.username ?? "?").charAt(0).toUpperCase()}</div>
         <Link
           to={`/profile/${argument.username}`}
-          className="text-sm font-medium text-primary hover:underline"
+          style={{ fontSize: 13, fontWeight: 500, color: "var(--color-primary)", textDecoration: "none" }}
           onClick={(e) => e.stopPropagation()}
         >
           {argument.username ?? "unknown"}
         </Link>
-        <span className="text-muted-foreground text-xs">·</span>
-        <span className="text-xs text-muted-foreground">{argument.topic_name}</span>
-        <span
-          className={`text-xs font-semibold px-2 py-0.5 rounded ml-auto ${
-            argument.stance === "for"
-              ? "bg-green-500/10 text-green-400"
-              : "bg-red-500/10 text-red-400"
-          }`}
-        >
+        <span style={{ color: "var(--ink-4)", fontSize: 12 }}>·</span>
+        <span style={{ fontSize: 12, color: "var(--ink-3)" }}>{argument.topic_name}</span>
+        <span className={`dmb-pill ${argument.stance} ml-auto`} style={{ marginLeft: "auto" }}>
           {argument.stance === "for" ? "FOR" : "AGAINST"}
         </span>
       </div>
 
       {/* Title */}
-      <h3
-        className="text-foreground text-lg mb-2"
-        style={{ fontFamily: "var(--font-display)" }}
-      >
-        {argument.title}
-      </h3>
+      <h3 className="arg-title">{argument.title}</h3>
 
       {/* Content */}
-      <p className="text-sm text-muted-foreground leading-relaxed mb-4">
+      <p className="arg-body">
         {variant === "feed" && argument.content.length > 200
           ? argument.content.slice(0, 200) + "…"
           : argument.content}
       </p>
 
-      {/* Stats + actions */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1">
-            <span className="text-amber-400">★</span>
+      {/* Footer */}
+      <div className="arg-foot">
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <span className="stat-chip">
+            <span style={{ color: "var(--color-primary)" }}>★</span>
             {avgStars > 0 ? avgStars.toFixed(1) : "—"}
           </span>
-          <span className="flex items-center gap-1">
-            <Brain className="w-3 h-3" />
+          <span className="stat-chip">
+            <Brain style={{ width: 11, height: 11 }} />
             {argument.changed_minds_count} minds changed
           </span>
         </div>
 
-        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }} onClick={(e) => e.stopPropagation()}>
           {!isOwn && (
             <button
               onClick={() => onOpenInteraction(argument)}
-              className="text-xs font-medium text-muted-foreground hover:text-primary border border-border hover:border-primary/50 rounded px-3 py-1.5 transition-colors"
+              className="dmb-btn ghost sm"
             >
               Rate
             </button>
           )}
           {onReply && (
-            <button
-              onClick={onReply}
-              className="text-xs font-medium text-primary border border-primary/40 hover:border-primary rounded px-3 py-1.5 transition-colors"
-            >
+            <button onClick={onReply} className="dmb-btn sm">
               {replyOpen ? "Cancel" : "Debate"}
             </button>
           )}

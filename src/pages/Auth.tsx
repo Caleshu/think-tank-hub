@@ -1,12 +1,9 @@
-import { useState } from "react";
-import { motion } from "framer-motion";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, Sun, Moon } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useTheme } from "@/hooks/useTheme";
 
 const Auth = () => {
   const [isSignUp, setIsSignUp] = useState(false);
@@ -14,12 +11,42 @@ const Auth = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [showResend, setShowResend] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { theme, toggleTheme } = useTheme();
+
+  // Supabase redirects here (with a #error=... or #access_token=... hash) after an
+  // email confirmation link is clicked, since emailRedirectTo points at this page.
+  useEffect(() => {
+    const hash = new URLSearchParams(window.location.hash.slice(1));
+    const errorCode = hash.get("error_code");
+    const errorDescription = hash.get("error_description");
+
+    if (errorCode) {
+      toast({
+        title: errorCode === "otp_expired" ? "Link expired" : "Confirmation failed",
+        description:
+          errorCode === "otp_expired"
+            ? "That confirmation link expired or was already used. Sign up again to get a new one, and open it in the same browser right away."
+            : errorDescription?.replace(/\+/g, " ") ?? "Please try again.",
+        variant: "destructive",
+      });
+      window.history.replaceState(null, "", window.location.pathname);
+      return;
+    }
+
+    if (hash.get("access_token")) {
+      toast({ title: "Email confirmed", description: "You're all set — sign in to continue." });
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, [toast]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setShowResend(false);
 
     try {
       if (isSignUp) {
@@ -28,7 +55,7 @@ const Auth = () => {
           password,
           options: {
             data: { username },
-            emailRedirectTo: window.location.origin,
+            emailRedirectTo: `${window.location.origin}/auth`,
           },
         });
         if (error) throw error;
@@ -37,129 +64,159 @@ const Auth = () => {
           description: "Check your email to confirm your account, then sign in.",
         });
         setIsSignUp(false);
+        setShowResend(true);
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) throw error;
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) {
+          if (error.message.toLowerCase().includes("email not confirmed")) {
+            setShowResend(true);
+          }
+          throw error;
+        }
         navigate("/dashboard");
       }
     } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
   };
 
+  const handleResend = async () => {
+    if (!email) {
+      toast({ title: "Enter your email first", variant: "destructive" });
+      return;
+    }
+    setResending(true);
+    try {
+      const { error } = await supabase.auth.resend({
+        type: "signup",
+        email,
+        options: { emailRedirectTo: `${window.location.origin}/auth` },
+      });
+      if (error) throw error;
+      toast({ title: "Confirmation email sent", description: "Check your inbox and open the link right away." });
+    } catch (error: any) {
+      toast({ title: "Couldn't resend", description: error.message, variant: "destructive" });
+    } finally {
+      setResending(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 relative overflow-hidden">
-      <div
-        className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] rounded-full opacity-[0.05]"
-        style={{
-          background:
-            "radial-gradient(circle, hsl(38, 92%, 50%), transparent 70%)",
-        }}
-      />
+    <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", flexDirection: "column", padding: "0 16px" }}>
+      {/* Minimal nav bar */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 0", borderBottom: "1px solid var(--rule)" }}>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--ink-3)" }}>
+          Debate Me Bro
+        </span>
+        <button className="icon-btn-pill" onClick={toggleTheme} title={theme === "dark" ? "Light mode" : "Dark mode"}>
+          {theme === "dark" ? <Sun style={{ width: 13, height: 13 }} /> : <Moon style={{ width: 13, height: 13 }} />}
+        </button>
+      </div>
 
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-        className="relative z-10 w-full max-w-md"
-      >
-        <Link
-          to="/"
-          className="inline-flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors mb-8"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          Back
-        </Link>
-
-        <h1
-          className="text-4xl md:text-5xl font-normal mb-2"
-          style={{ fontFamily: "var(--font-display)" }}
-        >
-          {isSignUp ? "Join the arena" : "Welcome back"}
-        </h1>
-        <p className="text-muted-foreground mb-8">
-          {isSignUp
-            ? "Create your account and start debating."
-            : "Sign in to continue debating."}
-        </p>
-
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {isSignUp && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="space-y-2"
-            >
-              <Label htmlFor="username">Username</Label>
-              <Input
-                id="username"
-                type="text"
-                placeholder="debatekinggg"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="bg-card border-border h-12"
-                required
-              />
-            </motion.div>
-          )}
-
-          <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="bg-card border-border h-12"
-              required
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
-            <Input
-              id="password"
-              type="password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="bg-card border-border h-12"
-              required
-              minLength={6}
-            />
-          </div>
-
-          <Button
-            type="submit"
-            className="w-full h-12 text-base font-semibold"
-            disabled={loading}
+      {/* Centered form */}
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ width: "100%", maxWidth: 400 }}>
+          <Link
+            to="/"
+            className="back-btn"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 28, textDecoration: "none" }}
           >
-            {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-            {isSignUp ? "Create Account" : "Sign In"}
-          </Button>
-        </form>
+            <ArrowLeft style={{ width: 13, height: 13 }} />
+            Back
+          </Link>
 
-        <p className="text-center text-muted-foreground mt-6 text-sm">
-          {isSignUp ? "Already have an account?" : "Don't have an account?"}{" "}
-          <button
-            onClick={() => setIsSignUp(!isSignUp)}
-            className="text-primary hover:underline font-medium"
-          >
-            {isSignUp ? "Sign in" : "Create one"}
-          </button>
-        </p>
-      </motion.div>
+          <div className="auth-card">
+            <div style={{ marginBottom: 28 }}>
+              <p style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.22em", textTransform: "uppercase", color: "var(--ink-3)", margin: "0 0 10px" }}>
+                {isSignUp ? "New account" : "Welcome back"}
+              </p>
+              <h1 className="auth-title">
+                {isSignUp ? "Enter the arena" : "Sign in"}
+              </h1>
+              <p className="auth-sub">
+                {isSignUp ? "Create your account and start debating." : "Continue to Debate Me Bro."}
+              </p>
+            </div>
+
+            <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {isSignUp && (
+                <div className="field">
+                  <label className="field-label">Username</label>
+                  <input
+                    type="text"
+                    placeholder="your_handle"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="dmb-input"
+                    required
+                  />
+                </div>
+              )}
+
+              <div className="field">
+                <label className="field-label">Email</label>
+                <input
+                  type="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="dmb-input"
+                  required
+                />
+              </div>
+
+              <div className="field">
+                <label className="field-label">Password</label>
+                <input
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="dmb-input"
+                  required
+                  minLength={6}
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="dmb-btn lg"
+                style={{ width: "100%", justifyContent: "center", marginTop: 6 }}
+                disabled={loading}
+              >
+                {loading && <Loader2 style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} />}
+                {isSignUp ? "Create account" : "Sign in"}
+              </button>
+            </form>
+
+            {showResend && (
+              <p className="auth-switch">
+                Didn't get the email?{" "}
+                <button
+                  type="button"
+                  onClick={handleResend}
+                  disabled={resending}
+                  style={{ background: "none", border: "none", color: "var(--color-primary)", fontWeight: 600, cursor: "pointer", fontSize: 13, padding: 0 }}
+                >
+                  {resending ? "Sending..." : "Resend confirmation email"}
+                </button>
+              </p>
+            )}
+
+            <p className="auth-switch">
+              {isSignUp ? "Already have an account?" : "Don't have an account?"}{" "}
+              <button
+                onClick={() => setIsSignUp(!isSignUp)}
+                style={{ background: "none", border: "none", color: "var(--color-primary)", fontWeight: 600, cursor: "pointer", fontSize: 13, padding: 0 }}
+              >
+                {isSignUp ? "Sign in" : "Create one"}
+              </button>
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

@@ -1,67 +1,45 @@
-import { motion } from "framer-motion";
-import { BookOpen, Handshake, FileText, TrendingUp } from "lucide-react";
-
 const items = [
   {
-    icon: BookOpen,
+    num: "I",
     title: "Read before you respond",
-    desc: "You must understand the other side before the chat opens. This alone eliminates most bad-faith arguing.",
+    desc: "Arguments are written out in full before any debate begins. You see the whole position first — no hot takes, no drive-by dunks.",
   },
   {
-    icon: Handshake,
-    title: "Comprehension over combat",
-    desc: "The \"I understand their side\" button reframes every debate from winning to genuine understanding.",
+    num: "II",
+    title: "Changing minds is the win",
+    desc: "The highest value action on the platform is marking that someone changed your mind. That's the metric that matters here.",
   },
   {
-    icon: FileText,
+    num: "III",
     title: "Living arguments",
-    desc: "Your position is a living document that evolves with every debate — not a throwaway comment lost in a feed.",
+    desc: "Your position evolves with every debate. Pin your best arguments to your profile — a living document of what you actually believe.",
   },
   {
-    icon: TrendingUp,
+    num: "IV",
     title: "Growth, not virality",
-    desc: "Reputation is built on good-faith engagement. The platform rewards intellectual growth, not outrage.",
+    desc: "Reputation comes from how well you argue — averaged across every rating you receive. No likes, no followers, no gaming.",
   },
 ];
 
 const Differentiators = () => {
   return (
-    <section className="py-32 px-6 border-t border-border">
-      <div className="max-w-6xl mx-auto">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          className="mb-20 text-center"
-        >
-          <p className="step-number mb-4 uppercase tracking-[0.3em]">Why This Is Different</p>
-          <h2 className="text-4xl md:text-6xl text-foreground leading-tight">
-            Debate that<br /><span className="text-gradient">actually works</span>
-          </h2>
-        </motion.div>
-
-        <div className="grid md:grid-cols-2 gap-12 max-w-4xl mx-auto">
-          {items.map((item, i) => (
-            <motion.div
-              key={item.title}
-              initial={{ opacity: 0, y: 20 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ delay: i * 0.1 }}
-              className="flex gap-5"
-            >
-              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0 mt-1">
-                <item.icon className="w-5 h-5 text-primary" />
-              </div>
-              <div>
-                <h3 className="text-foreground text-lg mb-2" style={{ fontFamily: 'var(--font-display)' }}>{item.title}</h3>
-                <p className="text-muted-foreground text-sm leading-relaxed">{item.desc}</p>
-              </div>
-            </motion.div>
-          ))}
-        </div>
+    <div className="ed-diff">
+      <p style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.22em", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 8 }}>
+        Why this is different
+      </p>
+      <h2 style={{ fontFamily: "var(--font-display)", fontSize: "clamp(32px, 4vw, 52px)", fontWeight: 400, letterSpacing: "-0.03em", color: "var(--ink)", margin: "0 0 40px", lineHeight: 1.05 }}>
+        Debate that <em>actually works</em>
+      </h2>
+      <div className="ed-diff-grid">
+        {items.map((item) => (
+          <div key={item.num} className="ed-diff-item">
+            <span className="ed-diff-num">{item.num}</span>
+            <h3 className="ed-diff-title">{item.title}</h3>
+            <p className="ed-diff-desc">{item.desc}</p>
+          </div>
+        ))}
       </div>
-    </section>
+    </div>
   );
 };
 

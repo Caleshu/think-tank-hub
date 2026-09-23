@@ -1,12 +1,35 @@
+import { useNavigate } from "react-router-dom";
+import { Sun, Moon } from "lucide-react";
+import { useTheme } from "@/hooks/useTheme";
+
 const Navbar = () => {
+  const navigate = useNavigate();
+  const { theme, toggleTheme } = useTheme();
+
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 px-6 py-5 flex items-center justify-between bg-background/80 backdrop-blur-md border-b border-border/50">
-      <span className="text-foreground font-bold text-lg tracking-tight" style={{ fontFamily: 'var(--font-display)' }}>
+    <nav className="ed-nav">
+      <span className="ed-nav-logo" onClick={() => navigate("/")}>
         Debate Me Bro
       </span>
-      <button className="bg-primary text-primary-foreground px-5 py-2 rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity">
-        Join Waitlist
-      </button>
+      <div className="ed-nav-right">
+        <button
+          onClick={toggleTheme}
+          style={{
+            background: "none", border: "none", cursor: "pointer",
+            color: "var(--ink-3)", padding: "8px 6px", display: "flex", alignItems: "center",
+            transition: "color 0.12s",
+          }}
+          title={theme === "dark" ? "Light mode" : "Dark mode"}
+        >
+          {theme === "dark" ? <Sun style={{ width: 15, height: 15 }} /> : <Moon style={{ width: 15, height: 15 }} />}
+        </button>
+        <button className="ed-nav-link" onClick={() => navigate("/auth")}>
+          Sign in
+        </button>
+        <button className="ed-nav-cta" onClick={() => navigate("/auth")}>
+          Get started
+        </button>
+      </div>
     </nav>
   );
 };

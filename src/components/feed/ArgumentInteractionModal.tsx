@@ -90,13 +90,7 @@ export default function ArgumentInteractionModal({
         {/* Metadata */}
         <div className="flex items-center gap-2 -mt-2 mb-1">
           <span className="text-xs text-muted-foreground">{argument.topic_name}</span>
-          <span
-            className={`text-xs font-semibold px-2 py-0.5 rounded ${
-              argument.stance === "for"
-                ? "bg-green-500/10 text-green-400"
-                : "bg-red-500/10 text-red-400"
-            }`}
-          >
+          <span className={`dmb-pill ${argument.stance}`}>
             {argument.stance === "for" ? "FOR" : "AGAINST"}
           </span>
           <span className="text-xs text-muted-foreground ml-auto">by {argument.username}</span>
@@ -110,7 +104,7 @@ export default function ArgumentInteractionModal({
         {/* Stats (always visible) */}
         <div className="flex items-center gap-6 text-sm text-muted-foreground pt-1">
           <span>
-            <span className="text-amber-400">★</span>{" "}
+            <span style={{ color: "var(--color-primary)" }}>★</span>{" "}
             {avgStars > 0 ? avgStars.toFixed(1) : "No ratings yet"}
           </span>
           <span className="flex items-center gap-1">
@@ -133,8 +127,8 @@ export default function ArgumentInteractionModal({
                   <button
                     key={n}
                     onClick={() => setLocalStars(localStars === n ? null : n)}
-                    className="text-2xl transition-all hover:scale-110"
-                    style={{ color: (localStars ?? 0) >= n ? "hsl(38 92% 50%)" : "hsl(0 0% 30%)" }}
+                    className="text-2xl transition-colors"
+                    style={{ color: (localStars ?? 0) >= n ? "var(--color-primary)" : "var(--ink-4)" }}
                   >
                     ★
                   </button>
@@ -145,13 +139,17 @@ export default function ArgumentInteractionModal({
             {/* Changed my mind */}
             <button
               onClick={() => setLocalMindChanged((v) => !v)}
-              className={`w-full py-2.5 rounded-lg border text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
-                localMindChanged
-                  ? "bg-primary/10 border-primary text-primary"
-                  : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground"
-              }`}
+              style={{
+                width: "100%", padding: "10px 16px", border: "1px solid",
+                borderColor: localMindChanged ? "var(--color-primary)" : "var(--rule)",
+                background: localMindChanged ? "var(--color-primary-soft)" : "transparent",
+                color: localMindChanged ? "var(--color-primary)" : "var(--ink-3)",
+                fontSize: 13, fontWeight: 600, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                transition: "all 0.1s", borderRadius: 0,
+              }}
             >
-              <Brain className="w-4 h-4" />
+              <Brain style={{ width: 14, height: 14 }} />
               {localMindChanged ? "✓ This changed my mind" : "This changed my mind"}
             </button>
 
